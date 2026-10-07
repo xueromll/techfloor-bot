@@ -1,0 +1,21 @@
+name = "techfloor"
+main = "src/worker.js"
+compatibility_date = "2026-10-08"
+keep_vars = true
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+APP_SHORT_NAME = "techfloor"
+TZ_NAME = "Asia/Yekaterinburg"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "laundry"
+database_id = "71b6e2f3-e103-4885-ac8a-46cbbfabf401"
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = true

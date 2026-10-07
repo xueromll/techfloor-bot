@@ -1,0 +1,21 @@
+name = "techfloor-test"
+main = "../src/worker.js"
+compatibility_date = "2025-09-01"
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+APP_SHORT_NAME = "techfloor"
+TZ_NAME = "Europe/Moscow"
+TELEGRAM_API = "http://127.0.0.1:8799"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "laundry"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = true

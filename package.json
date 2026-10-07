@@ -1,0 +1,11 @@
+{
+  "name": "techfloor-bot",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "test:server": "cd tests && wrangler dev --local --test-scheduled --port 8787 --ip 127.0.0.1"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

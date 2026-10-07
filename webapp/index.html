@@ -1,0 +1,574 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Техэтаж</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-secondary-bg-color, #f1f1f4);
+    --card: var(--tg-theme-bg-color, #ffffff);
+    --text: var(--tg-theme-text-color, #111111);
+    --hint: var(--tg-theme-hint-color, #8a8a8e);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --danger: var(--tg-theme-destructive-text-color, #d64545);
+    --free: #2e9e5b;
+    --run: #d64545;
+    --hold: #c9900f;
+    --done: #8e5bd6;
+    --line: rgba(128, 128, 128, 0.18);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
+  #app { padding: 12px 12px 32px; max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 4px 4px 2px; }
+  h2 { font-size: 16px; margin: 0 0 10px; }
+  h3 { font-size: 17px; margin: 0; }
+  p { margin: 0 0 10px; }
+  .hint { color: var(--hint); font-size: 13px; }
+  .head { margin-bottom: 12px; }
+  .head .hint { margin: 0 4px; }
+  .card { background: var(--card); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  .tabs { display: flex; gap: 6px; background: var(--card); padding: 4px; border-radius: 12px; margin-bottom: 12px; }
+  .tab { flex: 1; border: 0; background: transparent; color: var(--text); padding: 9px; border-radius: 9px; font: inherit; font-weight: 600; cursor: pointer; }
+  .tab.on { background: var(--accent); color: var(--accent-text); }
+  .wall { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-bottom: 6px; }
+  .wall + .wall { margin-top: 10px; }
+  .tile { border: 0; border-radius: 10px; padding: 8px 2px; font: inherit; color: var(--text); cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px; min-height: 58px; justify-content: center; border-bottom: 3px solid transparent; }
+  .tile b { font-size: 18px; }
+  .tile small { font-size: 11px; color: var(--hint); white-space: nowrap; }
+  .tile.free { background: rgba(46, 158, 91, 0.14); border-bottom-color: var(--free); }
+  .tile.run, .tile.parked { background: rgba(214, 69, 69, 0.13); border-bottom-color: var(--run); }
+  .tile.hold { background: rgba(201, 144, 15, 0.16); border-bottom-color: var(--hold); }
+  .tile.done { background: rgba(142, 91, 214, 0.15); border-bottom-color: var(--done); }
+  .tile.booked { outline: 2px dashed var(--hold); outline-offset: -2px; }
+  .tile.mine { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 2px; }
+  .legend span, .line { display: flex; align-items: center; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .dot.free { background: var(--free); }
+  .dot.run, .dot.parked { background: var(--run); }
+  .dot.hold { background: var(--hold); }
+  .dot.done { background: var(--done); }
+  .lines { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 8px; }
+  .line { padding: 6px 0; cursor: pointer; }
+  .item { border-top: 1px solid var(--line); padding: 10px 0; }
+  .item:first-of-type { border-top: 0; padding-top: 0; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .btn { display: block; width: 100%; border: 0; border-radius: 10px; padding: 12px; font: inherit; font-weight: 600; cursor: pointer; margin-top: 8px; background: var(--accent); color: var(--accent-text); }
+  .btn.secondary { background: rgba(128, 128, 128, 0.14); color: var(--text); }
+  .btn.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+  .btn.small { width: auto; padding: 7px 12px; margin: 0; font-size: 14px; }
+  .btn:disabled { opacity: 0.5; }
+  input { width: 100%; font: inherit; font-size: 20px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); text-align: center; }
+  select { width: 100%; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  .cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; text-align: center; }
+  .cal .wd { font-size: 12px; color: var(--hint); padding: 4px 0; }
+  .day { position: relative; border: 0; border-radius: 9px; padding: 9px 0; font: inherit; background: rgba(128, 128, 128, 0.1); color: var(--text); cursor: pointer; }
+  .day.out { background: transparent; color: var(--hint); opacity: 0.45; cursor: default; }
+  .day.today { font-weight: 700; }
+  .day.sel { background: var(--accent); color: var(--accent-text); }
+  .day.has::after { content: ""; position: absolute; left: 50%; bottom: 4px; width: 5px; height: 5px; margin-left: -2.5px; border-radius: 50%; background: var(--hold); }
+  .x:disabled { opacity: 0.3; }
+  .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+  .toggle input { width: 22px; height: 22px; margin: 0; flex: none; accent-color: var(--accent); }
+  label { display: block; margin-bottom: 6px; color: var(--hint); font-size: 13px; }
+  .chips { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 6px 0 10px; }
+  .chips.six { grid-template-columns: repeat(6, 1fr); }
+  .chip { border: 0; border-radius: 9px; padding: 10px 0; font: inherit; font-weight: 600; background: rgba(128, 128, 128, 0.14); color: var(--text); cursor: pointer; }
+  .label { font-size: 13px; color: var(--hint); margin-top: 8px; }
+  #sheet[hidden] { display: none; }
+  .sheet-bg { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); }
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; max-height: 85vh; overflow: auto; background: var(--card); border-radius: 16px 16px 0 0; padding: 16px 16px calc(20px + env(safe-area-inset-bottom)); max-width: 560px; margin: 0 auto; }
+  .sheet-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .x { border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; padding: 4px; }
+  .empty { padding: 40px 16px; text-align: center; color: var(--hint); }
+</style>
+</head>
+<body>
+<div id="app"><div class="empty">Загрузка…</div></div>
+<div id="sheet" hidden></div>
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+const app = document.getElementById("app");
+const sheet = document.getElementById("sheet");
+let S = null;
+let tab = "w";
+let section = null;
+let roomDay = null;
+let roomMonth = null;
+let skew = 0;
+let busy = false;
+
+function el(tag, props, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else if (v !== undefined && v !== null && v !== false) node.setAttribute(k, v);
+  }
+  for (const c of children.flat(Infinity)) {
+    if (c === null || c === undefined || c === false) continue;
+    node.append(c instanceof Node ? c : String(c));
+  }
+  return node;
+}
+
+const now = () => Date.now() / 1000 + skew;
+const who = (p) => (p.username ? "@" + p.username : p.name);
+const isMe = (p) => !!p && p.id === S.me.id;
+const mname = (m) => `${S.types[m.t].name} ${m.n}`;
+const clock = (ts) => new Intl.DateTimeFormat("ru-RU", { timeZone: S.tz, hour: "2-digit", minute: "2-digit" }).format(new Date(ts * 1000));
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const when = (ts) => (ts >= S.tomorrow ? "завтра " : "") + clock(ts);
+
+function minutesLeft(ts) { return Math.max(0, Math.ceil((ts - now()) / 60)); }
+function left(ts) {
+  const m = minutesLeft(ts);
+  if (!m) return "вот-вот закончит";
+  return m < 60 ? `осталось ~${m} мин` : `осталось ~${Math.floor(m / 60)} ч ${String(m % 60).padStart(2, "0")} мин`;
+}
+function leftShort(ts) {
+  const m = minutesLeft(ts);
+  return m < 60 ? `${m} мин` : `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`;
+}
+
+function btn(text, onclick, kind) {
+  return el("button", { class: "btn" + (kind ? " " + kind : ""), onclick }, text);
+}
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body ? "POST" : "GET",
+    headers: { "Content-Type": "application/json", "X-Init-Data": tg ? tg.initData : "" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  if (!res.ok || data.error) throw new Error(data.error || "Сервер не отвечает, попробуй ещё раз.");
+  return data;
+}
+
+function setState(data) {
+  S = data;
+  skew = S.now - Date.now() / 1000;
+  render();
+}
+
+async function load() {
+  try { setState(await api("/api/state")); }
+  catch (e) { if (!S) app.replaceChildren(el("div", { class: "empty" }, e.message)); }
+}
+
+async function act(body) {
+  if (busy) return;
+  busy = true;
+  try {
+    setState(await api("/api/action", body));
+    closeSheet();
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+  } catch (e) {
+    if (tg && tg.showAlert) tg.showAlert(e.message); else alert(e.message);
+  } finally {
+    busy = false;
+  }
+}
+
+function openSheet(title, body) {
+  sheet.replaceChildren(
+    el("div", { class: "sheet-bg", onclick: closeSheet }),
+    el("div", { class: "sheet" },
+      el("div", { class: "sheet-head" }, el("h3", {}, title), el("button", { class: "x", onclick: closeSheet }, "Закрыть")),
+      body)
+  );
+  sheet.hidden = false;
+}
+
+function closeSheet() {
+  sheet.hidden = true;
+  sheet.replaceChildren();
+}
+
+const ownerOf = (m) => (m.owner.id === 0 ? "хозяин неизвестен" : who(m.owner));
+
+function statusText(m) {
+  const booked = m.booking ? `, бронь на ${when(m.booking.at)}: ${who(m.booking.user)}` : "";
+  if (m.status === "run") return `${ownerOf(m)}, ${left(m.ends)}` + (m.next ? `, следующий: ${who(m.next)}` : "") + booked;
+  if (m.status === "hold") return `придержана для ${who(m.owner)} до ${clock(m.ends)}` + booked;
+  const things = m.owner && m.owner.id !== 0 ? `вещи ${who(m.owner)}` : "чьи-то вещи";
+  const after = (m.next ? `, следующий: ${who(m.next)}` : "") + booked;
+  if (m.status === "done") return `закончила${m.finished ? " в " + clock(m.finished) : ""}, внутри ${things}` + after;
+  if (m.status === "parked") return `занята: лежат переложенные ${things}` + after;
+  return "свободна" + booked;
+}
+
+function tile(m) {
+  const freeSub = m.booking ? `бронь ${clock(m.booking.at)}` : "свободна";
+  const subs = { run: m.ends ? leftShort(m.ends) : "", hold: "ждёт", done: "готово", parked: "вещи" };
+  const sub = subs[m.status] ?? freeSub;
+  const mine = isMe(m.owner) || isMe(m.next) || isMe(m.reporter) || (m.booking && isMe(m.booking.user));
+  return el("button", { class: `tile ${m.status}${m.booking ? " booked" : ""}${mine ? " mine" : ""}`, onclick: () => openMachine(m) },
+    el("b", {}, m.n), el("small", {}, sub));
+}
+
+function gridCard() {
+  const byKey = new Map(S.machines.map((m) => [m.t + m.n, m]));
+  const walls = S.walls.map((wall) => el("div", { class: "wall" }, wall.map((n) => tile(byKey.get(tab + n)))));
+  const lines = S.machines
+    .filter((m) => m.t === tab && m.status !== "free")
+    .map((m) => el("div", { class: "line", onclick: () => openMachine(m) },
+      el("span", { class: "dot " + m.status }), `${mname(m)} — ${statusText(m)}`));
+  return el("section", { class: "card" },
+    walls,
+    el("div", { class: "legend hint" },
+      el("span", {}, el("i", { class: "dot free" }), "свободна"),
+      el("span", {}, el("i", { class: "dot run" }), "занята"),
+      el("span", {}, el("i", { class: "dot hold" }), "придержана"),
+      el("span", {}, el("i", { class: "dot done" }), "готово, вещи внутри")),
+    lines.length ? el("div", { class: "lines" }, lines) : null);
+}
+
+function openMachine(m) {
+  const mine = isMe(m.owner);
+  const admin = S.me.admin;
+  const body = [el("p", {}, cap(statusText(m)) + (m.status === "run" ? ` (до ${clock(m.ends)})` : "") + ".")];
+  if (m.status === "parked") {
+    const by = !m.reporter ? "" : isMe(m.reporter) ? " (переложено тобой)" : ` (кто: ${who(m.reporter)})`;
+    body.push(el("p", { class: "hint" }, `Вещи переложены сюда${by}. Таймер не идёт — машина занята, пока вещи не заберут.`));
+  }
+  else if (m.reporter) body.push(el("p", { class: "hint" }, `Отмечено за другого человека: ${who(m.reporter)}.`));
+  if (m.booking && isMe(m.booking.user)) {
+    body.push(el("p", { class: "hint" }, `Это твоя бронь на ${when(m.booking.at)}. В это время машина будет ждать тебя ${S.claim} мин.`));
+    body.push(btn("Отменить бронь", () => act({ action: "unbook", id: m.booking.id }), "secondary"));
+  } else if (m.booking && m.status === "free") {
+    body.push(el("p", { class: "hint" }, `Забронирована на ${when(m.booking.at)}. Занять можно, только если программа закончится раньше.`));
+  }
+  if (m.status === "free" || ((m.status === "hold" || m.status === "done") && mine)) {
+    const input = el("input", { type: "text", inputmode: "decimal", placeholder: "1:05 или 45", autocomplete: "off" });
+    const owner = el("select", {},
+      el("option", { value: "me" }, "Мои"),
+      m.status === "free" ? [
+        S.people.map((p) => el("option", { value: p.id }, who(p))),
+        el("option", { value: "unknown" }, "Не знаю чьи"),
+      ] : null);
+    const go = () => act({ action: "take", t: m.t, n: m.n, time: input.value, owner: owner.value });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+    body.push(
+      el("label", {}, "Сколько показывает дисплей машины?"), input,
+      el("label", { style: "margin-top:10px" }, "Чьи вещи?"), owner,
+      btn("Занять", go));
+  }
+  if (m.status !== "free" && m.status !== "hold" && m.owner.id === 0 && !isMe(m.reporter)) {
+    body.push(btn("Это мои вещи", () => act({ action: "claim", t: m.t, n: m.n }), "secondary"));
+  }
+  if (m.status === "run" && (mine || isMe(m.reporter) || admin)) body.push(btn("Освободить", () => act({ action: "free", t: m.t, n: m.n }), "danger"));
+  if ((m.status === "done" || m.status === "parked") && (mine || isMe(m.reporter) || admin)) {
+    body.push(btn("Вещи забраны", () => act({ action: "free", t: m.t, n: m.n })));
+  }
+  if ((m.status === "done" || m.status === "parked") && !mine) {
+    body.push(btn("Вещи переложены — указать куда", () => openMove(m), "secondary"));
+  }
+  if (m.status === "hold" && mine) body.push(btn("Отказаться", () => act({ action: "free", t: m.t, n: m.n }), "danger"));
+  if (m.status === "hold" && !mine && admin) body.push(btn("Снять придержку", () => act({ action: "free", t: m.t, n: m.n }), "danger"));
+  if (["run", "done", "parked"].includes(m.status) && !mine) {
+    if (isMe(m.next)) body.push(btn("Отменить мою бронь", () => act({ action: "unnext", t: m.t, n: m.n }), "secondary"));
+    else if (!m.next) {
+      body.push(el("p", { class: "hint" }, `Когда машина освободится, она будет ждать тебя ${S.claim} мин.`));
+      body.push(btn("Забронировать, когда освободится", () => act({ action: "next", t: m.t, n: m.n })));
+    }
+  }
+  openSheet(mname(m), body);
+}
+
+function openMove(m) {
+  const body = [
+    el("p", {}, `Куда переложены вещи${m.owner.id ? " (" + who(m.owner) + ")" : ""} из ${S.types[m.t].gen} ${m.n}?`),
+    btn(S.ironing, () => act({ action: "move", ft: m.t, fn: m.n, to: "board" }), "secondary"),
+  ];
+  for (const t of Object.keys(S.types)) {
+    const free = S.machines.filter((x) => x.t === t && x.status === "free" && !(x.t === m.t && x.n === m.n));
+    if (!free.length) continue;
+    body.push(el("div", { class: "label" }, S.types[t].title),
+      el("div", { class: "chips six" }, free.map((x) =>
+        el("button", { class: "chip", onclick: () => act({ action: "move", ft: m.t, fn: m.n, to: "machine", tt: x.t, tn: x.n }) }, x.n))));
+  }
+  openSheet("Вещи переложены", body);
+}
+
+function bookable(t, at) {
+  return S.machines.filter((m) =>
+    m.t === t &&
+    (m.status === "free" || (m.ends <= at && !m.next)) &&
+    !S.bookings.some((b) => b.t === t && b.n === m.n && Math.abs(b.at - at) < S.bookingGap * 60));
+}
+
+function openSlots(t) {
+  const cfg = S.types[t];
+  const chips = (list) => el("div", { class: "chips six" }, list.map((ts) => el("button", { class: "chip", onclick: () => openSlotMachines(t, ts) }, clock(ts))));
+  const today = S.slots.filter((ts) => ts < S.tomorrow);
+  const tomorrow = S.slots.filter((ts) => ts >= S.tomorrow);
+  openSheet(`Бронь на ${cfg.acc}`, [
+    today.length ? [el("div", { class: "label" }, "Сегодня"), chips(today)] : null,
+    tomorrow.length ? [el("div", { class: "label" }, "Завтра"), chips(tomorrow)] : null,
+  ]);
+}
+
+function openSlotMachines(t, at) {
+  const cfg = S.types[t];
+  const free = bookable(t, at);
+  const day = at >= S.tomorrow ? "завтра " : "";
+  const body = [el("p", {}, `Какую ${cfg.acc} бронируем на ${day}${clock(at)}? В это время она будет ждать тебя ${S.claim} мин.`)];
+  if (!free.length) body.push(el("p", { class: "hint" }, "На это время свободных машин нет — выбери другое время."));
+  else {
+    body.push(el("div", { class: "chips six" }, free.map((m) => el("button", { class: "chip", onclick: () => act({ action: "book", t, at, n: m.n }) }, m.n))));
+    body.push(btn("Любая свободная", () => act({ action: "book", t, at, n: "any" }), "secondary"));
+  }
+  body.push(btn("← Другое время", () => openSlots(t), "secondary"));
+  openSheet(`Бронь на ${clock(at)}`, body);
+}
+
+function typeCard() {
+  const t = tab;
+  const cfg = S.types[t];
+  const queue = S.queue[t] || [];
+  const pos = queue.findIndex(isMe) + 1;
+  const free = S.machines.filter((m) => m.t === t && m.status === "free").length;
+  const booking = S.bookings.find((b) => b.t === t && isMe(b.user));
+  const parts = [];
+  if (pos) parts.push(el("p", {}, `Ты в очереди на ${cfg.acc}: место ${pos}.`), btn("Выйти из очереди", () => act({ action: "unqueue", t }), "secondary"));
+  else if (!free || queue.length) parts.push(btn(`Встать в очередь на ${cfg.acc}`, () => act({ action: "queue", t })));
+  if (booking) parts.push(el("p", { class: "label" }, `Твоя бронь: ${cfg.acc}${booking.n ? " " + booking.n : ""} в ${when(booking.at)}.`), btn("Отменить бронь", () => act({ action: "unbook", id: booking.id }), "secondary"));
+  else parts.push(btn("Забронировать на время", () => openSlots(t), "secondary"));
+  if (queue.length) parts.push(el("p", { class: "hint", style: "margin-top:10px" }, "Очередь: " + queue.map(who).join(", ")));
+  const books = S.bookings.filter((b) => b.t === t);
+  if (books.length) parts.push(el("p", { class: "hint" }, "Брони: " + books.map((b) => `${when(b.at)}${b.n ? " №" + b.n : ""} ${who(b.user)}`).join(", ")));
+  parts.push(el("p", { class: "hint", style: "margin:10px 0 0" }, "Нажми на занятую машину, чтобы забронировать её сразу после программы."));
+  return el("section", { class: "card" }, el("h2", {}, "Очередь и бронь"), parts);
+}
+
+function mineCard() {
+  const mine = S.machines.filter((m) => isMe(m.owner) || isMe(m.next) || isMe(m.reporter) || (m.booking && isMe(m.booking.user)));
+  if (!mine.length) return null;
+  const line = (m) => {
+    if (isMe(m.next)) return `${mname(m)} — забронирована за тобой после программы`;
+    if (m.booking && isMe(m.booking.user) && !isMe(m.owner)) return `${mname(m)} — твоя бронь на ${when(m.booking.at)}`;
+    if (isMe(m.reporter)) return `${mname(m)} — отмечена тобой: ${statusText(m)}`;
+    return `${mname(m)} — ${statusText(m)}`;
+  };
+  return el("section", { class: "card" }, el("h2", {}, "Мои машины"),
+    mine.map((m) => el("div", { class: "line", onclick: () => openMachine(m) }, el("span", { class: "dot " + m.status }), line(m))));
+}
+
+function confirmAct(text, body) {
+  if (tg && tg.showConfirm) tg.showConfirm(text, (ok) => { if (ok) act(body); });
+  else if (confirm(text)) act(body);
+}
+
+function adminCard(kind) {
+  if (!S.me.admin) return null;
+  const laundry = kind === "laundry";
+  return el("section", { class: "card" },
+    el("h2", {}, "Для админов"),
+    el("p", { class: "hint" }, laundry
+      ? "Все машины станут свободными, очередь, брони и записи о переложенных вещах удалятся."
+      : "Все текущие и будущие брони игровой будут отменены."),
+    btn(laundry ? "Сбросить всё в прачечной" : "Отменить все брони игровой", () => confirmAct(
+      laundry ? "Точно сбросить все статусы прачечной?" : "Точно отменить все брони игровой?",
+      { action: laundry ? "admin_reset_laundry" : "admin_reset_room" }), "danger"));
+}
+
+function privacyCard() {
+  const box = el("input", { type: "checkbox", onchange: () => act({ action: "privacy", hidden: box.checked }) });
+  box.checked = !!S.me.hidden;
+  return el("section", { class: "card" },
+    el("label", { class: "toggle" }, box, el("span", { style: "color:var(--text);font-size:15px" }, "Не показывать моё имя")),
+    el("p", { class: "hint", style: "margin:8px 0 0" },
+      S.me.hidden
+        ? "Включено: везде вместо твоего имени — «Аноним» (у тебя видно «Аноним (это ты)»). Админы чата видят имя. Уведомления приходят в личку после команды /start в чате с ботом."
+        : "Другие увидят «Аноним» вместо твоего имени. Уведомления будут приходить в личку — для этого один раз напиши боту /start."));
+}
+
+function movedCard() {
+  if (!S.moved.length) return null;
+  return el("section", { class: "card" }, el("h2", {}, "Переложенные вещи"),
+    S.moved.map((x) => {
+      const dest = x.to ? `${S.types[x.to.t].name} ${x.to.n}` : S.ironing;
+      const canPick = isMe(x.owner) || x.byMe || S.me.admin;
+      return el("div", { class: "item" },
+        el("div", { class: "row" },
+          el("div", {},
+            el("div", {}, `${dest}: вещи ${who(x.owner)}`),
+            el("div", { class: "hint" }, `из ${S.types[x.from.t].gen} ${x.from.n}, в ${clock(x.at)}` + (x.byMe ? ", переложено тобой" : x.mover ? `, переложено: ${who(x.mover)}` : ""))),
+          canPick ? el("button", { class: "btn small secondary", onclick: () => act({ action: "picked", id: x.id }) }, "Забрали") : null));
+    }));
+}
+
+const R = () => S.room;
+const step = () => R().step * 60;
+const dayByKey = (k) => R().days.find((d) => d.key === k);
+const roomOn = (d) => R().bookings.filter((b) => b.starts < d.end && b.ends > d.start);
+const roomNow = () => R().bookings.find((b) => b.starts <= now() && b.ends > now());
+const dayClock = (d, ts) => (ts >= d.end ? "24:00" : clock(ts));
+const dayTitle = (d) => cap(new Intl.DateTimeFormat("ru-RU", { timeZone: S.tz, weekday: "long", day: "numeric", month: "long" }).format(new Date((d.start + 3600) * 1000)));
+const monthTitle = (ym) => {
+  const [y, m] = ym.split("-").map(Number);
+  return cap(new Intl.DateTimeFormat("ru-RU", { timeZone: "UTC", month: "long", year: "numeric" }).format(new Date(Date.UTC(y, m - 1, 1)))).replace(/\s*г\.$/, "");
+};
+const roomWho = (b) => `${who(b.user)}${b.reason ? " — " + b.reason : ""}`;
+
+function roomStatusCard() {
+  const cur = roomNow();
+  const next = R().bookings.find((b) => b.starts > now());
+  const text = cur
+    ? `Сейчас занята до ${when(cur.ends)}: ${roomWho(cur)}.`
+    : `Сейчас свободна.${next ? ` Следующая бронь — ${dayTitle(R().days.find((d) => next.starts < d.end))}, ${clock(next.starts)}.` : ""}`;
+  return el("section", { class: "card" }, el("p", { style: "margin:0" }, el("span", { class: "dot " + (cur ? "run" : "free"), style: "display:inline-block;margin-right:8px" }), text));
+}
+
+function calendarCard() {
+  const months = [...new Set(R().days.map((d) => d.key.slice(0, 7)))];
+  if (!months.includes(roomMonth)) roomMonth = months[0];
+  const [y, m] = roomMonth.split("-").map(Number);
+  const offset = (new Date(Date.UTC(y, m - 1, 1)).getUTCDay() + 6) % 7;
+  const total = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const cells = [];
+  for (let i = 0; i < offset; i++) cells.push(el("span", {}));
+  for (let dd = 1; dd <= total; dd++) {
+    const k = `${roomMonth}-${String(dd).padStart(2, "0")}`;
+    const d = dayByKey(k);
+    const cls = ["day", d ? "" : "out", k === roomDay ? "sel" : "", d && d === R().days[0] ? "today" : "", d && roomOn(d).length ? "has" : ""].filter(Boolean).join(" ");
+    cells.push(el("button", { class: cls, disabled: d ? null : "disabled", onclick: () => { roomDay = k; render(); } }, dd));
+  }
+  const at = months.indexOf(roomMonth);
+  return el("section", { class: "card" },
+    el("div", { class: "row", style: "margin-bottom:8px" },
+      el("button", { class: "x", disabled: at > 0 ? null : "disabled", onclick: () => { roomMonth = months[at - 1]; render(); } }, "‹"),
+      el("h2", { style: "margin:0" }, monthTitle(roomMonth)),
+      el("button", { class: "x", disabled: at < months.length - 1 ? null : "disabled", onclick: () => { roomMonth = months[at + 1]; render(); } }, "›")),
+    el("div", { class: "cal" }, ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((w) => el("span", { class: "wd" }, w)), cells),
+    el("div", { class: "legend hint" }, el("span", {}, el("i", { class: "dot hold" }), "есть брони")));
+}
+
+function freeRanges(d) {
+  const from = Math.max(d.start, Math.floor(now() / step()) * step());
+  const out = [];
+  let cursor = from;
+  for (const b of roomOn(d)) {
+    if (b.starts > cursor) out.push([cursor, Math.min(b.starts, d.end)]);
+    cursor = Math.max(cursor, b.ends);
+  }
+  if (cursor < d.end) out.push([cursor, d.end]);
+  return out.filter(([a, b]) => b > a);
+}
+
+function dayCard() {
+  const d = dayByKey(roomDay) || R().days[0];
+  roomDay = d.key;
+  const list = roomOn(d);
+  const free = freeRanges(d);
+  return el("section", { class: "card" },
+    el("h2", {}, dayTitle(d)),
+    list.length
+      ? list.map((b) => el("div", { class: "item" },
+          el("div", { class: "row" },
+            el("div", {},
+              el("div", {}, el("b", {}, `${dayClock(d, Math.max(b.starts, d.start))}–${dayClock(d, Math.min(b.ends, d.end))}`), b.starts <= now() && b.ends > now() ? " · сейчас" : ""),
+              el("div", { class: "hint" }, roomWho(b))),
+            b.mine || S.me.admin ? el("button", { class: "btn small secondary", onclick: () => act({ action: "room_cancel", id: b.id }) }, "Отменить") : null)))
+      : el("p", { class: "hint" }, "Броней нет."),
+    el("p", { class: "hint", style: "margin:10px 0 0" }, free.length ? "Свободно: " + free.map(([a, b]) => `${dayClock(d, a)}–${dayClock(d, b)}`).join(", ") : "Свободного времени не осталось."),
+    free.length ? btn("Забронировать", () => openRoomBook(d)) : null);
+}
+
+function openRoomBook(d) {
+  const s = step();
+  const taken = (ts) => R().bookings.some((b) => b.starts <= ts && b.ends > ts);
+  const starts = [];
+  for (let ts = Math.max(d.start, Math.floor(now() / s) * s); ts < d.end; ts += s) if (!taken(ts)) starts.push(ts);
+  const startSel = el("select", {}, starts.map((ts) => el("option", { value: ts }, clock(ts))));
+  const endSel = el("select", {});
+  const fillEnds = () => {
+    const st = Number(startSel.value);
+    const limit = Math.min(st + R().maxHours * 3600, ...R().bookings.filter((b) => b.starts > st).map((b) => b.starts));
+    const opts = [];
+    for (let ts = st + s; ts <= limit; ts += s) opts.push(el("option", { value: ts }, ts >= d.end ? `${clock(ts)} (след. день)` : clock(ts)));
+    endSel.replaceChildren(...opts);
+    if (opts.length > 1) endSel.selectedIndex = Math.min(3, opts.length - 1);
+  };
+  startSel.addEventListener("change", fillEnds);
+  fillEnds();
+  const reason = el("input", { type: "text", maxlength: R().reasonLength, placeholder: "Например: настолки, день рождения", style: "font-size:16px;text-align:left" });
+  openSheet(`${R().name}: ${dayTitle(d)}`, [
+    el("label", {}, "Начало"), startSel,
+    el("label", { style: "margin-top:10px" }, "Конец"), endSel,
+    el("label", { style: "margin-top:10px" }, "Зачем бронируешь (необязательно)"), reason,
+    btn("Забронировать", () => act({ action: "room_book", starts: Number(startSel.value), ends: Number(endSel.value), reason: reason.value })),
+  ]);
+}
+
+function laundryView() {
+  const counts = Object.entries(S.types).map(([t, cfg]) =>
+    `${cfg.many} ${S.machines.filter((m) => m.t === t && m.status === "free").length} из ${S.numbers.length}`);
+  return [
+    el("header", { class: "head" }, el("h1", {}, "Прачечная"), el("div", { class: "hint" }, "Свободно: " + counts.join(", "))),
+    el("div", { class: "tabs" }, Object.entries(S.types).map(([t, cfg]) =>
+      el("button", { class: t === tab ? "tab on" : "tab", onclick: () => { tab = t; render(); } }, cfg.title))),
+    gridCard(),
+    mineCard(),
+    typeCard(),
+    movedCard(),
+    adminCard("laundry"),
+  ];
+}
+
+function roomView() {
+  return [
+    el("header", { class: "head" }, el("h1", {}, R().name)),
+    roomStatusCard(),
+    calendarCard(),
+    dayCard(),
+    adminCard("room"),
+  ];
+}
+
+function dmCard() {
+  if (S.dm === 1 || !S.bot) return null;
+  const link = `https://t.me/${S.bot}?start=app`;
+  const open = () => (tg && tg.openTelegramLink ? tg.openTelegramLink(link) : window.open(link));
+  return el("section", { class: "card" },
+    el("b", {}, "Включи личные уведомления"),
+    el("p", { class: "hint", style: "margin:6px 0 0" }, "Нажми «Старт» в чате с ботом — тогда он сможет написать тебе лично, например если твои вещи переложили."),
+    btn("Открыть бота", open, "secondary"));
+}
+
+function render() {
+  if (!section) section = S.section;
+  const switcher = el("div", { class: "tabs" },
+    [["laundry", "Прачечная"], ["playroom", R().name]].map(([k, label]) =>
+      el("button", { class: k === section ? "tab on" : "tab", onclick: () => { section = k; render(); } }, label)));
+  app.replaceChildren(...[
+    switcher,
+    dmCard(),
+    ...(section === "playroom" ? roomView() : laundryView()),
+    privacyCard(),
+  ].filter(Boolean));
+}
+
+if (tg) {
+  tg.ready();
+  tg.expand();
+}
+if (!tg || !tg.initData) {
+  app.replaceChildren(el("div", { class: "empty" }, "Открой приложение кнопкой из закреплённого сообщения в чате Telegram."));
+} else {
+  load();
+  setInterval(load, 15000);
+  setInterval(() => { if (S) render(); }, 30000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+}
+</script>
+</body>
+</html>
