@@ -18,6 +18,7 @@
     --run: #d64545;
     --hold: #c9900f;
     --done: #8e5bd6;
+    --loaded: #d6762e;
     --line: rgba(128, 128, 128, 0.18);
   }
   * { box-sizing: border-box; }
@@ -44,6 +45,7 @@
   .tile.run, .tile.parked { background: rgba(214, 69, 69, 0.13); border-bottom-color: var(--run); }
   .tile.hold { background: rgba(201, 144, 15, 0.16); border-bottom-color: var(--hold); }
   .tile.done { background: rgba(142, 91, 214, 0.15); border-bottom-color: var(--done); }
+  .tile.loaded { background: rgba(214, 118, 46, 0.16); border-bottom-color: var(--loaded); }
   .tile.booked { outline: 2px dashed var(--hold); outline-offset: -2px; }
   .tile.mine { outline: 2px solid var(--accent); outline-offset: -2px; }
   .legend { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 2px; }
@@ -53,6 +55,7 @@
   .dot.run, .dot.parked { background: var(--run); }
   .dot.hold { background: var(--hold); }
   .dot.done { background: var(--done); }
+  .dot.loaded { background: var(--loaded); }
   .lines { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 8px; }
   .line { padding: 6px 0; cursor: pointer; }
   .item { border-top: 1px solid var(--line); padding: 10px 0; }
@@ -102,6 +105,8 @@ let roomDay = null;
 let roomMonth = null;
 let skew = 0;
 let busy = false;
+let loading = false;
+let poll = null;
 
 function el(tag, props, ...children) {
   const node = document.createElement(tag);
@@ -159,8 +164,18 @@ function setState(data) {
 }
 
 async function load() {
+  if (loading) return;
+  loading = true;
   try { setState(await api("/api/state")); }
   catch (e) { if (!S) app.replaceChildren(el("div", { class: "empty" }, e.message)); }
+  finally { loading = false; schedule(); }
+}
+
+function schedule() {
+  clearTimeout(poll);
+  if (document.hidden) return;
+  const ticking = !!S && S.machines.some((m) => m.status === "run" || m.status === "hold");
+  poll = setTimeout(load, ticking ? 15000 : 45000);
 }
 
 async function act(body) {
@@ -192,6 +207,7 @@ function closeSheet() {
   sheet.replaceChildren();
 }
 
+const LEFTOVER = ["done", "parked", "loaded"];
 const ownerOf = (m) => (m.owner.id === 0 ? "хозяин неизвестен" : who(m.owner));
 
 function statusText(m) {
@@ -202,12 +218,13 @@ function statusText(m) {
   const after = (m.next ? `, следующий: ${who(m.next)}` : "") + booked;
   if (m.status === "done") return `закончила${m.finished ? " в " + clock(m.finished) : ""}, внутри ${things}` + after;
   if (m.status === "parked") return `занята: лежат переложенные ${things}` + after;
+  if (m.status === "loaded") return `занята: внутри ${things}, программа не запущена` + after;
   return "свободна" + booked;
 }
 
 function tile(m) {
   const freeSub = m.booking ? `бронь ${clock(m.booking.at)}` : "свободна";
-  const subs = { run: m.ends ? leftShort(m.ends) : "", hold: "ждёт", done: "готово", parked: "вещи" };
+  const subs = { run: m.ends ? leftShort(m.ends) : "", hold: "ждёт", done: "готово", parked: "вещи", loaded: "вещи" };
   const sub = subs[m.status] ?? freeSub;
   const mine = isMe(m.owner) || isMe(m.next) || isMe(m.reporter) || (m.booking && isMe(m.booking.user));
   return el("button", { class: `tile ${m.status}${m.booking ? " booked" : ""}${mine ? " mine" : ""}`, onclick: () => openMachine(m) },
@@ -227,17 +244,24 @@ function gridCard() {
       el("span", {}, el("i", { class: "dot free" }), "свободна"),
       el("span", {}, el("i", { class: "dot run" }), "занята"),
       el("span", {}, el("i", { class: "dot hold" }), "придержана"),
-      el("span", {}, el("i", { class: "dot done" }), "готово, вещи внутри")),
+      el("span", {}, el("i", { class: "dot done" }), "готово, вещи внутри"),
+      el("span", {}, el("i", { class: "dot loaded" }), "вещи без программы")),
     lines.length ? el("div", { class: "lines" }, lines) : null);
 }
 
 function openMachine(m) {
   const mine = isMe(m.owner);
+  const marked = isMe(m.reporter);
   const admin = S.me.admin;
+  const leftover = LEFTOVER.includes(m.status);
   const body = [el("p", {}, cap(statusText(m)) + (m.status === "run" ? ` (до ${clock(m.ends)})` : "") + ".")];
   if (m.status === "parked") {
-    const by = !m.reporter ? "" : isMe(m.reporter) ? " (переложено тобой)" : ` (кто: ${who(m.reporter)})`;
+    const by = !m.reporter ? "" : marked ? " (переложено тобой)" : ` (кто: ${who(m.reporter)})`;
     body.push(el("p", { class: "hint" }, `Вещи переложены сюда${by}. Таймер не идёт — машина занята, пока вещи не заберут.`));
+  }
+  else if (m.status === "loaded") {
+    const by = !m.reporter ? "" : marked ? " (отметил ты)" : ` (отметил: ${who(m.reporter)})`;
+    body.push(el("p", { class: "hint" }, `Внутри лежат вещи, программа не запущена${by}. Таймер не идёт — машина занята, пока вещи не заберут. Отметка снимется сама через ${S.clothesHours} ч.`));
   }
   else if (m.reporter) body.push(el("p", { class: "hint" }, `Отмечено за другого человека: ${who(m.reporter)}.`));
   if (m.booking && isMe(m.booking.user)) {
@@ -246,34 +270,39 @@ function openMachine(m) {
   } else if (m.booking && m.status === "free") {
     body.push(el("p", { class: "hint" }, `Забронирована на ${when(m.booking.at)}. Занять можно, только если программа закончится раньше.`));
   }
-  if (m.status === "free" || ((m.status === "hold" || m.status === "done") && mine)) {
+  if (m.status === "free" || (["hold", "done", "loaded"].includes(m.status) && (mine || marked))) {
+    const pickOwner = m.status === "free" || m.status === "loaded";
     const input = el("input", { type: "text", inputmode: "decimal", placeholder: "1:05 или 45", autocomplete: "off" });
     const owner = el("select", {},
       el("option", { value: "me" }, "Мои"),
-      m.status === "free" ? [
+      pickOwner ? [
         S.people.map((p) => el("option", { value: p.id }, who(p))),
         el("option", { value: "unknown" }, "Не знаю чьи"),
       ] : null);
+    if (m.status === "loaded") {
+      if (m.owner.id === 0) owner.value = "unknown";
+      else if (!mine && S.people.some((p) => p.id === m.owner.id)) owner.value = String(m.owner.id);
+    }
     const go = () => act({ action: "take", t: m.t, n: m.n, time: input.value, owner: owner.value });
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
     body.push(
       el("label", {}, "Сколько показывает дисплей машины?"), input,
       el("label", { style: "margin-top:10px" }, "Чьи вещи?"), owner,
-      btn("Занять", go));
+      btn(m.status === "free" ? "Занять" : "Запустить программу", go));
+    if (m.status === "free") {
+      body.push(el("p", { class: "hint", style: "margin:10px 0 0" }, "Если вещи уже внутри, а программу никто не запускал — отметь машину занятой без таймера."));
+      body.push(btn("Вещи внутри, без программы", () => act({ action: "load", t: m.t, n: m.n, owner: owner.value }), "secondary"));
+    }
   }
-  if (m.status !== "free" && m.status !== "hold" && m.owner.id === 0 && !isMe(m.reporter)) {
+  if (m.status !== "free" && m.status !== "hold" && m.owner.id === 0 && !marked) {
     body.push(btn("Это мои вещи", () => act({ action: "claim", t: m.t, n: m.n }), "secondary"));
   }
-  if (m.status === "run" && (mine || isMe(m.reporter) || admin)) body.push(btn("Освободить", () => act({ action: "free", t: m.t, n: m.n }), "danger"));
-  if ((m.status === "done" || m.status === "parked") && (mine || isMe(m.reporter) || admin)) {
-    body.push(btn("Вещи забраны", () => act({ action: "free", t: m.t, n: m.n })));
-  }
-  if ((m.status === "done" || m.status === "parked") && !mine) {
-    body.push(btn("Вещи переложены — указать куда", () => openMove(m), "secondary"));
-  }
+  if (m.status === "run" && (mine || marked || admin)) body.push(btn("Освободить", () => act({ action: "free", t: m.t, n: m.n }), "danger"));
+  if (leftover && (mine || marked || admin)) body.push(btn("Вещи забраны", () => act({ action: "free", t: m.t, n: m.n })));
+  if (leftover && !mine) body.push(btn("Вещи переложены — указать куда", () => openMove(m), "secondary"));
   if (m.status === "hold" && mine) body.push(btn("Отказаться", () => act({ action: "free", t: m.t, n: m.n }), "danger"));
   if (m.status === "hold" && !mine && admin) body.push(btn("Снять придержку", () => act({ action: "free", t: m.t, n: m.n }), "danger"));
-  if (["run", "done", "parked"].includes(m.status) && !mine) {
+  if ((m.status === "run" || leftover) && !mine) {
     if (isMe(m.next)) body.push(btn("Отменить мою бронь", () => act({ action: "unnext", t: m.t, n: m.n }), "secondary"));
     else if (!m.next) {
       body.push(el("p", { class: "hint" }, `Когда машина освободится, она будет ждать тебя ${S.claim} мин.`));
@@ -540,7 +569,7 @@ function dmCard() {
   const open = () => (tg && tg.openTelegramLink ? tg.openTelegramLink(link) : window.open(link));
   return el("section", { class: "card" },
     el("b", {}, "Включи личные уведомления"),
-    el("p", { class: "hint", style: "margin:6px 0 0" }, "Нажми «Старт» в чате с ботом — тогда он сможет написать тебе лично, например если твои вещи переложили."),
+    el("p", { class: "hint", style: "margin:6px 0 0" }, "Нажми «Старт» в чате с ботом — тогда он сможет написать тебе лично: если твои вещи переложили или нужно подтвердить бронь игровой."),
     btn("Открыть бота", open, "secondary"));
 }
 
@@ -565,9 +594,8 @@ if (!tg || !tg.initData) {
   app.replaceChildren(el("div", { class: "empty" }, "Открой приложение кнопкой из закреплённого сообщения в чате Telegram."));
 } else {
   load();
-  setInterval(load, 15000);
-  setInterval(() => { if (S) render(); }, 30000);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+  setInterval(() => { if (S && !document.hidden) render(); }, 30000);
+  document.addEventListener("visibilitychange", () => (document.hidden ? clearTimeout(poll) : load()));
 }
 </script>
 </body>

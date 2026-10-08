@@ -9,18 +9,27 @@ const CLOTHES_HOURS = 12;
 const BOOKING_GAP_MINUTES = 90;
 const PEOPLE_DAYS = 60;
 const ROOM_NAME = "Игровая";
+const ROOM_GEN = "игровой";
+const ROOM_REMIND_HOUR = 18;
+const ROOM_SOON_MINUTES = 30;
 const ROOM_DAYS = 90;
 const ROOM_STEP_MINUTES = 30;
 const ROOM_MAX_HOURS = 12;
 const ROOM_REASON_LENGTH = 100;
 const INIT_DATA_TTL = 24 * 3600;
 const MEMBER_CACHE_SECONDS = 600;
+const MEMBER_CACHE_MAX = 500;
+const AUTH_CACHE_SECONDS = 300;
+const AUTH_CACHE_MAX = 200;
+const SWEEP_SECONDS = 600;
+const RECENT_SECONDS = 120;
+const SCHEMA_VERSION = 3;
 
 const WALLS = [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11]];
 
 const MACHINES = {
-  w: { name: "Стиралка", title: "Стиралки", acc: "стиралку", gen: "Стиралки", many: "стиралок" },
-  d: { name: "Сушилка", title: "Сушилки", acc: "сушилку", gen: "Сушилки", many: "сушилок" },
+  w: { name: "Стиралка", title: "Стиралки", acc: "стиралку", gen: "Стиралки", prep: "стиралке", many: "стиралок" },
+  d: { name: "Сушилка", title: "Сушилки", acc: "сушилку", gen: "Сушилки", prep: "сушилке", many: "сушилок" },
 };
 
 const IRONING_BOARD = "Гладильная доска";
@@ -29,18 +38,19 @@ const ANONYMOUS = "Аноним";
 const HELP =
   "Привет! Я бот техэтажа общаги.\n\n" +
   "• Прачечная — стиралки и сушилки: что свободно, кто занял и сколько осталось, очередь, бронь, " +
-  "напоминания и отметка «переложил чужие вещи».\n" +
+  "напоминания и отметки «внутри вещи, программа не запущена» и «переложил чужие вещи».\n" +
   "• Игровая — календарь: свободна ли она сейчас, брони на любой день и бронь своего времени.\n\n" +
   "Как пользоваться: в чате общаги открой тему про стирку или про игровую и нажми кнопку " +
   "в закреплённом сообщении — «Открыть прачечную» или «Открыть игровую».\n\n" +
-  "Уведомления: если в приложении включить «Не показывать моё имя», напоминания будут приходить сюда, в личку. " +
+  "Уведомления: напоминания про стирку и про брони игровой приходят сюда, в личку — " +
+  "вечером накануне я спрошу, нужна ли бронь на завтра, и напомню за полчаса до начала. " +
   "Теперь, после /start, я могу тебе писать.\n\n" +
   "Для админов чата: сделайте бота админом (закреплять и удалять сообщения) и отправьте " +
   "/board в теме про стирку и /playroom в теме про игровую.";
 
 const DESCRIPTION =
   "Бот техэтажа общаги.\n\n" +
-  "Прачечная: стиралки и сушилки, кто занял и сколько осталось, очередь, бронь и напоминания.\n" +
+  "Прачечная: стиралки и сушилки, кто занял и сколько осталось, вещи без программы, очередь, бронь и напоминания.\n" +
   "Игровая: календарь броней — посмотреть, свободна ли, и забронировать время.\n\n" +
   "Открывай приложение кнопкой из закреплённых сообщений в чате общаги.";
 
@@ -86,7 +96,8 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS room_bookings (
     id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL, user_name TEXT NOT NULL, username TEXT,
-    starts REAL NOT NULL, ends REAL NOT NULL, reason TEXT, created_at REAL NOT NULL)`,
+    starts REAL NOT NULL, ends REAL NOT NULL, reason TEXT, created_at REAL NOT NULL,
+    asked INTEGER NOT NULL DEFAULT 0, warned INTEGER NOT NULL DEFAULT 0)`,
 ];
 
 const MIGRATIONS = [
@@ -98,15 +109,48 @@ const MIGRATIONS = [
   "ALTER TABLE bookings ADD COLUMN num INTEGER",
   "ALTER TABLE boards ADD COLUMN thread_id INTEGER",
   "ALTER TABLE machines ADD COLUMN finished_at REAL",
+  "ALTER TABLE room_bookings ADD COLUMN asked INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE room_bookings ADD COLUMN warned INTEGER NOT NULL DEFAULT 0",
 ];
 
 const NUMBERS = WALLS.flat();
 const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings"];
 const UNKNOWN = { id: 0, name: "неизвестно", username: null };
+
+const LEFTOVER = new Set(["done", "parked", "loaded"]);
+const REPLACEABLE = new Set(["hold", "done", "loaded"]);
+const ROOM_ACTIONS = new Set(["room_book", "room_cancel", "admin_reset_room", "privacy"]);
+
 const memberCache = new Map();
+const authCache = new Map();
 const encoder = new TextEncoder();
 let botUsername = null;
 let schemaReady = false;
+let initDataKey = null;
+let cleanupAt = 0;
+let roomSweepAt = 0;
+
+function fingerprint(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36);
+}
+
+const PAGE_ETAG = '"' + fingerprint(PAGE) + '"';
+
+function cacheGet(map, k, ttl) {
+  const hit = map.get(k);
+  if (!hit || now() - hit.at > ttl) return null;
+  return hit.data;
+}
+
+function cacheSet(map, k, data, max) {
+  map.set(k, { at: now(), data });
+  if (map.size > max) map.delete(map.keys().next().value);
+}
 
 class ApiError extends Error {
   constructor(message, status = 400) {
@@ -119,12 +163,12 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
+      if (url.pathname === "/") return page(request);
       await ensureSchema(env);
       if (url.pathname === "/telegram" && request.method === "POST") return await onWebhook(request, env);
       if (url.pathname === "/setup") return await onSetup(url, env);
       if (url.pathname === "/api/state") return await apiState(request, env);
       if (url.pathname === "/api/action" && request.method === "POST") return await apiAction(request, env);
-      if (url.pathname === "/") return new Response(PAGE, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
       return new Response("Not found", { status: 404 });
     } catch (e) {
       if (e instanceof ApiError) return json({ error: e.message }, e.status);
@@ -137,6 +181,12 @@ export default {
     ctx.waitUntil(cronRun(env));
   },
 };
+
+function page(request) {
+  const headers = { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache", ETag: PAGE_ETAG };
+  if (request.headers.get("If-None-Match") === PAGE_ETAG) return new Response(null, { status: 304, headers });
+  return new Response(PAGE, { headers });
+}
 
 async function cronRun(env) {
   await ensureSchema(env);
@@ -166,27 +216,45 @@ const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 async function ensureSchema(env) {
   if (schemaReady) return;
-  await env.DB.batch(SCHEMA.map((sql) => env.DB.prepare(sql)));
-  for (const sql of MIGRATIONS) {
-    try {
-      await env.DB.prepare(sql).run();
-    } catch (e) {
-      if (!/duplicate column/i.test(String(e))) throw e;
+  let version = null;
+  try {
+    const out = await env.DB.batch([
+      ...SCHEMA.map((sql) => env.DB.prepare(sql)),
+      env.DB.prepare("SELECT value AS v FROM meta WHERE key = 'schema'"),
+    ]);
+    version = out[out.length - 1].results[0]?.v ?? null;
+  } catch (e) {
+    await env.DB.batch(SCHEMA.map((sql) => env.DB.prepare(sql)));
+  }
+  if (Number(version) !== SCHEMA_VERSION) {
+    for (const sql of MIGRATIONS) {
+      try {
+        await env.DB.prepare(sql).run();
+      } catch (e) {
+        if (!/duplicate column/i.test(String(e))) throw e;
+      }
     }
+    await env.DB.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema', ?)").bind(SCHEMA_VERSION).run();
   }
   schemaReady = true;
 }
 
+const q = (env, sql, ...args) => (args.length ? env.DB.prepare(sql).bind(...args) : env.DB.prepare(sql));
+
+async function batch(env, ...statements) {
+  return (await env.DB.batch(statements)).map((r) => r.results ?? []);
+}
+
 async function all(env, sql, ...args) {
-  return (await env.DB.prepare(sql).bind(...args).all()).results;
+  return (await q(env, sql, ...args).all()).results;
 }
 
 function first(env, sql, ...args) {
-  return env.DB.prepare(sql).bind(...args).first();
+  return q(env, sql, ...args).first();
 }
 
 async function changed(env, sql, ...args) {
-  return (await env.DB.prepare(sql).bind(...args).run()).meta.changes > 0;
+  return (await q(env, sql, ...args).run()).meta.changes > 0;
 }
 
 async function tg(env, method, payload = {}) {
@@ -322,15 +390,19 @@ async function getMachine(env, chatId, mtype, num) {
   return first(env, "SELECT * FROM machines WHERE chat_id = ? AND mtype = ? AND num = ?", chatId, mtype, num);
 }
 
-async function occupy(env, chatId, mtype, num, p, started, ends, kind = "run", reporter = null) {
+async function occupy(env, chatId, mtype, num, p, started, ends, kind = "run", reporter = null, replaces = null) {
+  const insert = env.DB.prepare(
+    "INSERT INTO machines (chat_id, mtype, num, user_id, user_name, username, started_at, ends_at, kind, warned, reporter_id, reporter_name, reporter_username) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)"
+  ).bind(chatId, mtype, num, p.id, p.name, p.username ?? null, started, ends, kind, reporter ? reporter.id : null, reporter ? reporter.name : null, reporter ? reporter.username ?? null : null);
   try {
-    await env.DB.batch([
-      env.DB.prepare("DELETE FROM machines WHERE chat_id = ? AND mtype = ? AND num = ? AND kind IN ('hold', 'done') AND user_id = ?").bind(chatId, mtype, num, p.id),
-      env.DB.prepare(
-        "INSERT INTO machines (chat_id, mtype, num, user_id, user_name, username, started_at, ends_at, kind, warned, reporter_id, reporter_name, reporter_username) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)"
-      ).bind(chatId, mtype, num, p.id, p.name, p.username ?? null, started, ends, kind, reporter ? reporter.id : null, reporter ? reporter.name : null, reporter ? reporter.username ?? null : null),
-    ]);
+    if (replaces === null) await insert.run();
+    else {
+      await env.DB.batch([
+        env.DB.prepare("DELETE FROM machines WHERE chat_id = ? AND mtype = ? AND num = ? AND started_at = ?").bind(chatId, mtype, num, replaces),
+        insert,
+      ]);
+    }
     return true;
   } catch (e) {
     if (/UNIQUE|constraint/i.test(String(e))) return false;
@@ -345,12 +417,15 @@ async function enqueue(env, chatId, mtype, p, priority) {
   ).bind(chatId, mtype, p.id, p.name, p.username ?? null, priority).run();
 }
 
-async function queueOf(env, chatId, mtype) {
-  return all(env, "SELECT * FROM queue WHERE chat_id = ? AND mtype = ? ORDER BY priority, id", chatId, mtype);
-}
-
 async function position(env, chatId, mtype, userId) {
-  return (await queueOf(env, chatId, mtype)).findIndex((r) => r.user_id === userId) + 1;
+  const row = await first(
+    env,
+    "SELECT (SELECT COUNT(*) FROM queue WHERE chat_id = q.chat_id AND mtype = q.mtype " +
+      "AND (priority < q.priority OR (priority = q.priority AND id < q.id))) + 1 AS pos " +
+      "FROM queue q WHERE q.chat_id = ? AND q.mtype = ? AND q.user_id = ?",
+    chatId, mtype, userId
+  );
+  return row ? row.pos : 0;
 }
 
 async function offer(env, chatId, mtype, num, p) {
@@ -392,29 +467,36 @@ async function bookableNumbers(env, chatId, mtype, at) {
   return ok.sort((a, b) => Number(busy.has(key(mtype, a))) - Number(busy.has(key(mtype, b))));
 }
 
-async function bookedSoon(env, chatId, mtype) {
-  const rows = await all(
-    env,
-    "SELECT num FROM bookings WHERE chat_id = ? AND mtype = ? AND num IS NOT NULL AND at <= ?",
-    chatId, mtype, now() + (CLAIM_MINUTES + 30) * 60
-  );
-  return new Set(rows.map((r) => r.num));
-}
+const takenSql = "SELECT num FROM machines WHERE chat_id = ? AND mtype = ?";
+const soonSql = "SELECT num FROM bookings WHERE chat_id = ? AND mtype = ? AND num IS NOT NULL AND at <= ?";
+const soonAt = () => now() + (CLAIM_MINUTES + 30) * 60;
 
 async function dispatch(env, chatId, mtype) {
-  const busy = await busyMap(env, chatId);
-  const soon = await bookedSoon(env, chatId, mtype);
+  const [takenRows, soonRows, waiting] = await batch(
+    env,
+    q(env, takenSql, chatId, mtype),
+    q(env, soonSql, chatId, mtype, soonAt()),
+    q(env, "SELECT * FROM queue WHERE chat_id = ? AND mtype = ? ORDER BY priority, id", chatId, mtype)
+  );
+  const taken = new Set(takenRows.map((r) => r.num));
+  const soon = new Set(soonRows.map((r) => r.num));
   let offered = false;
   for (const num of NUMBERS) {
-    if (busy.has(key(mtype, num)) || soon.has(num)) continue;
+    if (!waiting.length) break;
+    if (taken.has(num) || soon.has(num)) continue;
     let given = false;
-    for (const head of await queueOf(env, chatId, mtype)) {
-      if (!(await changed(env, "DELETE FROM queue WHERE id = ?", head.id))) continue;
+    for (let i = 0; i < waiting.length; i++) {
+      const head = waiting[i];
+      if (!(await changed(env, "DELETE FROM queue WHERE id = ?", head.id))) {
+        waiting.splice(i--, 1);
+        continue;
+      }
       const row = await offer(env, chatId, mtype, num, person(head));
       if (!row) {
         await enqueue(env, chatId, mtype, person(head), head.priority);
         break;
       }
+      waiting.splice(i, 1);
       const reason = head.priority === 0 ? "время твоей брони" : "подошла твоя очередь";
       await notice(env, chatId, person(row), `${reason}: ${mname(mtype, num)} ждёт тебя до ${clock(env, row.ends_at)}.`);
       given = offered = true;
@@ -425,17 +507,26 @@ async function dispatch(env, chatId, mtype) {
   return offered;
 }
 
-async function tick(env) {
+async function tick(env, chatId = null) {
   const t = now();
+  const scope = chatId === null ? "" : " AND chat_id = ?";
+  const arg = chatId === null ? [] : [chatId];
+  const [warnDue, expired, dueBookings, hungry] = await batch(
+    env,
+    q(env,
+      "SELECT * FROM machines WHERE kind = 'run' AND warned = 0 AND ends_at > ? AND ends_at - ? <= ? AND ends_at - started_at > ?" + scope,
+      t, WARN_MINUTES * 60, t, WARN_MINUTES * 60, ...arg),
+    q(env, "SELECT * FROM machines WHERE ends_at <= ?" + scope, t, ...arg),
+    q(env, "SELECT * FROM bookings WHERE at <= ?" + scope, t, ...arg),
+    q(env,
+      "SELECT chat_id, mtype FROM (SELECT DISTINCT chat_id, mtype FROM queue WHERE 1 = 1" + scope + ") AS waiting " +
+        "WHERE (SELECT COUNT(*) FROM machines m WHERE m.chat_id = waiting.chat_id AND m.mtype = waiting.mtype) < ?",
+      ...arg, NUMBERS.length)
+  );
   const dirty = new Set();
 
   if (WARN_MINUTES > 0) {
-    const due = await all(
-      env,
-      "SELECT * FROM machines WHERE kind = 'run' AND warned = 0 AND ends_at > ? AND ends_at - ? <= ? AND ends_at - started_at > ?",
-      t, WARN_MINUTES * 60, t, WARN_MINUTES * 60
-    );
-    for (const row of due) {
+    for (const row of warnDue) {
       const left = Math.max(1, Math.round((row.ends_at - t) / 60));
       const ok = await changed(
         env,
@@ -454,7 +545,7 @@ async function tick(env) {
     }
   }
 
-  for (const row of await all(env, "SELECT * FROM machines WHERE ends_at <= ?", t)) {
+  for (const row of expired) {
     if (row.kind === "run") {
       const finished = await changed(
         env,
@@ -480,11 +571,18 @@ async function tick(env) {
     dirty.add(row.chat_id);
     if (row.kind === "hold") {
       await notice(env, row.chat_id, person(row), `время вышло — ${mname(row.mtype, row.num)} передана дальше.`);
+    } else if (row.kind === "loaded") {
+      await noticeMachine(
+        env,
+        row,
+        `${mname(row.mtype, row.num)} больше ${CLOTHES_HOURS} ч стояла с твоими вещами — отметка снята, машина снова свободна.`,
+        `${mname(row.mtype, row.num)} больше ${CLOTHES_HOURS} ч стояла с вещами без программы — отметка снята, машина снова свободна.`
+      );
     }
     await handoff(env, row.chat_id, row.mtype, row.num);
   }
 
-  for (const b of await all(env, "SELECT * FROM bookings WHERE at <= ?", t)) {
+  for (const b of dueBookings) {
     if (!(await changed(env, "DELETE FROM bookings WHERE id = ?", b.id))) continue;
     dirty.add(b.chat_id);
     if (b.num && !(await getMachine(env, b.chat_id, b.mtype, b.num))) {
@@ -501,17 +599,35 @@ async function tick(env) {
     }
   }
 
-  for (const q of await all(env, "SELECT DISTINCT chat_id, mtype FROM queue")) {
-    if (await dispatch(env, q.chat_id, q.mtype)) dirty.add(q.chat_id);
+  for (const item of hungry) {
+    if (await dispatch(env, item.chat_id, item.mtype)) dirty.add(item.chat_id);
   }
 
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM moved WHERE at < ?").bind(t - CLOTHES_HOURS * 3600),
-    env.DB.prepare("DELETE FROM room_bookings WHERE ends < ?").bind(t - 86400),
-  ]);
+  for (const id of dirty) await updatePinned(env, id);
+  if (chatId !== null) return;
+  if (t - cleanupAt > SWEEP_SECONDS) {
+    cleanupAt = t;
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM moved WHERE at < ?").bind(t - CLOTHES_HOURS * 3600),
+      env.DB.prepare("DELETE FROM room_bookings WHERE ends < ?").bind(t - 86400),
+    ]);
+  }
+  await remindRoomBookings(env, t);
+  await sweepRoomBoards(env, t);
+}
 
-  for (const chatId of dirty) await updatePinned(env, chatId);
-  for (const r of await all(env, "SELECT chat_id FROM pboards")) await updateRoomBoard(env, r.chat_id);
+async function sweepRoomBoards(env, t) {
+  const full = t - roomSweepAt > SWEEP_SECONDS;
+  const chats = full
+    ? await all(env, "SELECT chat_id FROM pboards")
+    : await all(
+        env,
+        "SELECT DISTINCT p.chat_id FROM pboards p JOIN room_bookings r ON r.chat_id = p.chat_id " +
+          "WHERE (r.starts > ? AND r.starts <= ?) OR (r.ends > ? AND r.ends <= ?)",
+        t - RECENT_SECONDS, t, t - RECENT_SECONDS, t
+      );
+  if (full) roomSweepAt = t;
+  for (const r of chats) await updateRoomBoard(env, r.chat_id);
 }
 
 async function appLink(env, chatId, section = "") {
@@ -568,17 +684,22 @@ async function pinnedText(env, chatId) {
     const free = NUMBERS.filter((n) => !busy.has(key(mtype, n))).length;
     return `${cfg.many} ${free} из ${NUMBERS.length}`;
   });
+  const leftover = [...busy.values()].filter((r) => LEFTOVER.has(r.kind)).length;
   return (
     "<b>Прачечная</b>\n" +
-    `Свободно: ${counts.join(", ")}.\n\n` +
-    "Открой приложение, чтобы занять машину, встать в очередь, забронировать " +
-    "или отметить, что переложил чужие вещи."
+    `Свободно: ${counts.join(", ")}.\n` +
+    (leftover ? `С вещами внутри: ${leftover}.\n` : "") +
+    "\nОткрой приложение, чтобы занять машину, встать в очередь, забронировать, " +
+    "отметить, что внутри лежат вещи без программы, или что переложил чужие вещи."
   );
 }
 
 async function say(env, chatId, text, extra = {}, table = "boards") {
-  const board = await first(env, `SELECT thread_id FROM ${table} WHERE chat_id = ?`, chatId);
-  const thread = extra.message_thread_id !== undefined ? extra.message_thread_id : board ? board.thread_id : null;
+  let thread = extra.message_thread_id;
+  if (thread === undefined) {
+    const board = await first(env, `SELECT thread_id FROM ${table} WHERE chat_id = ?`, chatId);
+    thread = board ? board.thread_id : null;
+  }
   const payload = { chat_id: chatId, text, parse_mode: "HTML", ...extra };
   delete payload.message_thread_id;
   if (thread) payload.message_thread_id = thread;
@@ -640,6 +761,7 @@ async function onWebhook(request, env) {
 }
 
 async function onUpdate(update, env) {
+  if (update.callback_query) return onCallback(env, update.callback_query);
   const msg = update.message;
   if (!msg) return;
   if (msg.migrate_to_chat_id) {
@@ -665,6 +787,38 @@ async function onUpdate(update, env) {
   else await updatePinned(env, chat.id, command === "/board", thread);
 }
 
+async function onCallback(env, cq) {
+  const parsed = String(cq.data || "").match(/^r([kc]):(\d+)$/);
+  const answer = (text) => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
+  const rewrite = (text) =>
+    cq.message
+      ? tg(env, "editMessageText", { chat_id: cq.message.chat.id, message_id: cq.message.message_id, text, parse_mode: "HTML" })
+      : null;
+  if (!parsed) {
+    await answer();
+    return;
+  }
+  const row = await first(env, "SELECT * FROM room_bookings WHERE id = ?", Number(parsed[2]));
+  if (!row || row.user_id !== cq.from.id) {
+    await answer("Этой брони больше нет.");
+    await rewrite(`Бронь ${ROOM_GEN} уже отменена.`);
+    return;
+  }
+  if (parsed[1] === "k") {
+    await answer("Бронь оставлена.");
+    await rewrite(`Бронь ${ROOM_GEN} остаётся: ${roomSpan(env, row)}${roomWhy(row)}.`);
+    return;
+  }
+  if (!(await dropRoomBooking(env, row, true))) {
+    await answer("Этой брони больше нет.");
+    await rewrite(`Бронь ${ROOM_GEN} уже отменена.`);
+    return;
+  }
+  await answer("Бронь отменена.");
+  await rewrite(`Бронь ${ROOM_GEN} отменена: ${roomSpan(env, row)}. Время снова свободно.`);
+  await updateRoomBoard(env, row.chat_id);
+}
+
 async function cronStatus(env) {
   const row = await first(env, "SELECT MAX(at) AS last, SUM(at > ?) AS recent FROM cron_log", now() - 15 * 60);
   const error = await first(env, "SELECT value FROM meta WHERE key = 'cron_error'");
@@ -685,7 +839,7 @@ async function onSetup(url, env) {
   const hook = await tg(env, "setWebhook", {
     url: `${url.origin}/telegram`,
     secret_token: env.WEBHOOK_SECRET,
-    allowed_updates: ["message"],
+    allowed_updates: ["message", "callback_query"],
   });
   const name = await username(env);
   const profile = [
@@ -718,26 +872,33 @@ async function hmac(secret, data) {
   return new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, encoder.encode(data)));
 }
 
+async function signInitData(env, data) {
+  if (!initDataKey) {
+    const seed = await hmac("WebAppData", env.BOT_TOKEN);
+    initDataKey = await crypto.subtle.importKey("raw", seed, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  }
+  return new Uint8Array(await crypto.subtle.sign("HMAC", initDataKey, encoder.encode(data)));
+}
+
 function hex(bytes) {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 async function membership(env, chatId, userId) {
   const cacheKey = `${chatId}:${userId}`;
-  const hit = memberCache.get(cacheKey);
-  if (hit && now() - hit.at < MEMBER_CACHE_SECONDS) return hit;
+  const hit = cacheGet(memberCache, cacheKey, MEMBER_CACHE_SECONDS);
+  if (hit) return hit;
   const res = await tg(env, "getChatMember", { chat_id: chatId, user_id: userId });
   if (!res.ok) return { inside: false, admin: false };
   const status = res.result.status;
   const admin = status === "creator" || status === "administrator";
   const inside = admin || status === "member" || (status === "restricted" && res.result.is_member);
-  const entry = { inside, admin, at: now() };
-  memberCache.set(cacheKey, entry);
+  const entry = { inside, admin };
+  cacheSet(memberCache, cacheKey, entry, MEMBER_CACHE_MAX);
   return entry;
 }
 
-async function remember(env, chatId, me) {
-  const row = await first(env, "SELECT * FROM people WHERE chat_id = ? AND user_id = ?", chatId, me.id);
+async function remember(env, chatId, me, row) {
   if (row && row.name === me.name && row.username === me.username && now() - row.seen_at < 3600) return !!row.hidden;
   await env.DB.prepare(
     "INSERT INTO people (chat_id, user_id, name, username, hidden, seen_at) VALUES (?, ?, ?, ?, 0, ?) " +
@@ -746,37 +907,43 @@ async function remember(env, chatId, me) {
   return !!(row && row.hidden);
 }
 
-async function authorize(request, env) {
-  const params = new URLSearchParams(request.headers.get("X-Init-Data") || "");
+async function verifyInitData(env, raw) {
+  const cached = cacheGet(authCache, raw, AUTH_CACHE_SECONDS);
+  if (cached) return cached;
+  const params = new URLSearchParams(raw);
   const hash = params.get("hash");
   if (!hash) throw new ApiError("Открой приложение через Telegram.", 401);
   params.delete("hash");
   const check = [...params.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([k, v]) => `${k}=${v}`).join("\n");
-  const secret = await hmac("WebAppData", env.BOT_TOKEN);
-  if (hex(await hmac(secret, check)) !== hash) throw new ApiError("Открой приложение через Telegram.", 401);
-  if (now() - Number(params.get("auth_date")) > INIT_DATA_TTL) throw new ApiError("Сессия устарела — закрой и открой приложение заново.", 401);
+  if (hex(await signInitData(env, check)) !== hash) throw new ApiError("Открой приложение через Telegram.", 401);
   const user = JSON.parse(params.get("user") || "null");
-  if (!user) throw new ApiError("Открой приложение через Telegram.", 401);
-  const start = (params.get("start_param") || "").match(/^(-?\d+)(?:_([a-z]))?$/);
+  if (!user || !user.id) throw new ApiError("Открой приложение через Telegram.", 401);
+  const data = { user, authDate: Number(params.get("auth_date")), start: params.get("start_param") || "" };
+  cacheSet(authCache, raw, data, AUTH_CACHE_MAX);
+  return data;
+}
+
+async function authorize(request, env) {
+  const { user, authDate, start: startParam } = await verifyInitData(env, request.headers.get("X-Init-Data") || "");
+  if (now() - authDate > INIT_DATA_TTL) throw new ApiError("Сессия устарела — закрой и открой приложение заново.", 401);
+  const start = startParam.match(/^(-?\d+)(?:_([a-z]))?$/);
   if (!start) throw new ApiError("Открой приложение кнопкой из закреплённого сообщения в чате.", 400);
   const chatId = Number(start[1]);
   const section = start[2] === "p" ? "playroom" : "laundry";
-  const configured = await first(env, "SELECT 1 AS ok FROM boards WHERE chat_id = ? UNION SELECT 1 FROM pboards WHERE chat_id = ?", chatId, chatId);
-  if (!configured) throw new ApiError("В этом чате бот не настроен. Админу нужно отправить /board или /playroom.", 404);
+  const [configured, mine] = await batch(
+    env,
+    q(env, "SELECT 1 AS ok FROM boards WHERE chat_id = ? UNION SELECT 1 FROM pboards WHERE chat_id = ?", chatId, chatId),
+    q(env, "SELECT * FROM people WHERE chat_id = ? AND user_id = ?", chatId, user.id)
+  );
+  if (!configured.length) throw new ApiError("В этом чате бот не настроен. Админу нужно отправить /board или /playroom.", 404);
   const { inside, admin } = await membership(env, chatId, user.id);
   if (!inside) throw new ApiError("Приложение доступно только участникам чата.", 403);
   const me = { id: user.id, name: user.first_name, username: user.username ?? null };
-  me.hidden = await remember(env, chatId, me);
+  me.hidden = await remember(env, chatId, me, mine[0]);
   return { chatId, me, admin, section };
 }
 
-async function roomState(env, chatId, me, admin, view) {
-  const days = roomDays(env);
-  const rows = await all(
-    env,
-    "SELECT * FROM room_bookings WHERE chat_id = ? AND ends > ? AND starts < ? ORDER BY starts",
-    chatId, days[0].start, days[days.length - 1].end
-  );
+function roomState(days, rows, view, meId) {
   return {
     name: ROOM_NAME,
     step: ROOM_STEP_MINUTES,
@@ -789,25 +956,46 @@ async function roomState(env, chatId, me, admin, view) {
       ends: r.ends,
       reason: r.reason || "",
       user: view(person(r)),
-      mine: r.user_id === me.id,
+      mine: r.user_id === meId,
     })),
   };
 }
 
 async function state(env, chatId, me, admin, section = "laundry") {
-  const people = new Map((await all(env, "SELECT * FROM people WHERE chat_id = ?", chatId)).map((r) => [r.user_id, r]));
+  const t = now();
+  const days = roomDays(env);
+  const [peopleRows, machineRows, nextRows, bookingRows, queueRows, movedRows, dmRows, boardRows, roomRows] = await batch(
+    env,
+    q(env, "SELECT * FROM people WHERE chat_id = ?", chatId),
+    q(env, "SELECT * FROM machines WHERE chat_id = ?", chatId),
+    q(env, "SELECT * FROM nexts WHERE chat_id = ?", chatId),
+    q(env, "SELECT * FROM bookings WHERE chat_id = ? ORDER BY at", chatId),
+    q(env, "SELECT * FROM queue WHERE chat_id = ? ORDER BY priority, id", chatId),
+    q(env, "SELECT * FROM moved WHERE chat_id = ? AND at >= ? ORDER BY at DESC", chatId, t - CLOTHES_HOURS * 3600),
+    q(env, "SELECT ok FROM dm WHERE user_id = ?", me.id),
+    q(env, "SELECT 'laundry' AS s FROM boards WHERE chat_id = ? UNION ALL SELECT 'playroom' FROM pboards WHERE chat_id = ?", chatId, chatId),
+    q(env,
+      "SELECT * FROM room_bookings WHERE chat_id = ? AND ends > ? AND starts < ? ORDER BY starts",
+      chatId, days[0].start, days[days.length - 1].end)
+  );
+  const hidden = new Set(peopleRows.filter((r) => r.hidden).map((r) => r.user_id));
   const view = (p) => {
     if (!p) return null;
-    if (!p.id || !people.get(p.id)?.hidden) return p;
+    if (!p.id || !hidden.has(p.id)) return p;
     if (p.id === me.id) return { ...p, name: `${ANONYMOUS} (это ты)`, username: null };
     if (admin) return { id: null, name: `${p.username ? "@" + p.username : p.name} (скрыто)`, username: null };
     return { id: null, name: ANONYMOUS, username: null };
   };
-  const busy = await busyMap(env, chatId);
-  const nexts = new Map((await all(env, "SELECT * FROM nexts WHERE chat_id = ?", chatId)).map((r) => [key(r.mtype, r.num), r]));
-  const bookingRows = await all(env, "SELECT * FROM bookings WHERE chat_id = ? ORDER BY at", chatId);
+  const busy = new Map(machineRows.map((r) => [key(r.mtype, r.num), r]));
+  const nexts = new Map(nextRows.map((r) => [key(r.mtype, r.num), r]));
+  const booked = new Map();
+  for (const b of bookingRows) {
+    if (b.num != null && !booked.has(key(b.mtype, b.num))) booked.set(key(b.mtype, b.num), b);
+  }
   const machines = [];
+  const queue = {};
   for (const mtype of Object.keys(MACHINES)) {
+    queue[mtype] = queueRows.filter((r) => r.mtype === mtype).map((r) => view(person(r)));
     for (const num of NUMBERS) {
       const k = key(mtype, num);
       const row = busy.get(k);
@@ -816,16 +1004,15 @@ async function state(env, chatId, me, admin, section = "laundry") {
         const showReporter = row.kind !== "parked" || admin || row.reporter_id === me.id;
         Object.assign(item, { owner: view(person(row)), ends: row.ends_at, reporter: showReporter ? view(person(row, "reporter")) : null, finished: row.finished_at });
       }
-      if (nexts.has(k)) item.next = view(person(nexts.get(k)));
-      const booked = bookingRows.find((b) => b.mtype === mtype && b.num === num);
-      if (booked) item.booking = { id: booked.id, at: booked.at, user: view(person(booked)) };
+      const nxt = nexts.get(k);
+      if (nxt) item.next = view(person(nxt));
+      const b = booked.get(k);
+      if (b) item.booking = { id: b.id, at: b.at, user: view(person(b)) };
       machines.push(item);
     }
   }
-  const queue = {};
-  for (const mtype of Object.keys(MACHINES)) queue[mtype] = (await queueOf(env, chatId, mtype)).map((r) => view(person(r)));
   const bookings = bookingRows.map((r) => ({ id: r.id, t: r.mtype, n: r.num, at: r.at, user: view(person(r)) }));
-  const moved = (await all(env, "SELECT * FROM moved WHERE chat_id = ? AND at >= ? ORDER BY at DESC", chatId, now() - CLOTHES_HOURS * 3600)).map((r) => ({
+  const moved = movedRows.map((r) => ({
     id: r.id,
     owner: view(person(r, "owner")),
     mover: admin ? view(person(r, "mover")) : null,
@@ -834,19 +1021,21 @@ async function state(env, chatId, me, admin, section = "laundry") {
     to: r.to_mtype ? { t: r.to_mtype, n: r.to_num } : null,
     at: r.at,
   }));
-  const cutoff = now() - PEOPLE_DAYS * 86400;
-  const choices = [...people.values()]
+  const cutoff = t - PEOPLE_DAYS * 86400;
+  const choices = peopleRows
     .filter((r) => r.user_id !== me.id && !r.hidden && r.seen_at >= cutoff)
     .map((r) => ({ id: r.user_id, name: r.name, username: r.username }))
     .sort((a, b) => a.name.localeCompare(b.name, "ru"));
+  const boards = new Set(boardRows.map((r) => r.s));
   return {
-    now: now(),
+    now: t,
     me: { ...me, admin },
     types: MACHINES,
     walls: WALLS,
     numbers: NUMBERS,
     ironing: IRONING_BOARD,
     claim: CLAIM_MINUTES,
+    clothesHours: CLOTHES_HOURS,
     bookingGap: BOOKING_GAP_MINUTES,
     machines,
     queue,
@@ -854,21 +1043,99 @@ async function state(env, chatId, me, admin, section = "laundry") {
     moved,
     people: choices,
     bot: await username(env),
-    dm: (await first(env, "SELECT ok FROM dm WHERE user_id = ?", me.id))?.ok ?? null,
+    dm: dmRows[0]?.ok ?? null,
     slots: slots(env),
     tomorrow: localMidnight(env, 1),
     tz: env.TZ_NAME || "Asia/Yekaterinburg",
     section,
-    sections: {
-      laundry: !!(await first(env, "SELECT 1 AS ok FROM boards WHERE chat_id = ?", chatId)),
-      playroom: !!(await first(env, "SELECT 1 AS ok FROM pboards WHERE chat_id = ?", chatId)),
-    },
-    room: await roomState(env, chatId, me, admin, view),
+    sections: { laundry: boards.has("laundry"), playroom: boards.has("playroom") },
+    room: roomState(days, roomRows, view, me.id),
   };
 }
 
 async function roomAnnounce(env, chatId, text) {
   if (await first(env, "SELECT 1 AS ok FROM pboards WHERE chat_id = ?", chatId)) await say(env, chatId, text, {}, "pboards");
+}
+
+function roomSpan(env, b) {
+  return `${dayLabel(env, b.starts)}, ${clock(env, b.starts)}–${clock(env, b.ends)}`;
+}
+
+function roomWhy(b) {
+  return b.reason ? ` — ${escape(b.reason)}` : "";
+}
+
+async function roomDm(env, b, text, buttons) {
+  const dm = await tg(env, "sendMessage", {
+    chat_id: b.user_id,
+    text,
+    parse_mode: "HTML",
+    reply_markup: { inline_keyboard: buttons.map((row) => [row]) },
+  });
+  if (dm.ok) {
+    await setDm(env, b.user_id, true);
+    return true;
+  }
+  if (dm.error_code === 403 || /chat not found/i.test(dm.description || "")) await setDm(env, b.user_id, false);
+  return false;
+}
+
+async function askRoomBooking(env, b) {
+  const text =
+    `Напоминание: ${ROOM_NAME} забронирована за тобой на завтра — ${roomSpan(env, b)}${roomWhy(b)}.\n\n` +
+    "Бронь ещё нужна? Если планы изменились, лучше освободить время для других.";
+  const sent = await roomDm(env, b, text, [
+    { text: "Да, бронь нужна", callback_data: `rk:${b.id}` },
+    { text: "Нет, отменить бронь", callback_data: `rc:${b.id}` },
+  ]);
+  if (sent) return;
+  await notice(
+    env,
+    b.chat_id,
+    person(b),
+    `напоминание: ${ROOM_NAME} забронирована за тобой на завтра — ${roomSpan(env, b)}${roomWhy(b)}. ` +
+      "Если бронь больше не нужна, отмени её в приложении."
+  );
+}
+
+async function warnRoomBooking(env, b) {
+  const text =
+    `Твоя бронь ${ROOM_GEN} начинается в ${clock(env, b.starts)} и держится до ${clock(env, b.ends)}${roomWhy(b)}.`;
+  const sent = await roomDm(env, b, text, [{ text: "Не приду — отменить бронь", callback_data: `rc:${b.id}` }]);
+  if (sent) return;
+  await notice(env, b.chat_id, person(b), `твоя бронь ${ROOM_GEN} начинается в ${clock(env, b.starts)}.`);
+}
+
+async function remindRoomBookings(env, t) {
+  const tomorrow = localMidnight(env, 1);
+  const hour = Number(env.ROOM_REMIND_HOUR ?? ROOM_REMIND_HOUR);
+  const gate = tomorrow - (24 - hour) * 3600;
+  const statements = [
+    q(env,
+      "SELECT * FROM room_bookings WHERE warned = 0 AND starts > ? AND starts - ? <= ? AND created_at < starts - ? ORDER BY starts",
+      t, t, ROOM_SOON_MINUTES * 60, ROOM_SOON_MINUTES * 60),
+  ];
+  if (t >= gate) {
+    statements.push(
+      q(env,
+        "SELECT * FROM room_bookings WHERE asked = 0 AND starts >= ? AND starts < ? AND created_at < ? ORDER BY starts",
+        tomorrow, localMidnight(env, 2), gate)
+    );
+  }
+  const [soon, asking = []] = await batch(env, ...statements);
+  for (const b of asking) {
+    if (await changed(env, "UPDATE room_bookings SET asked = 1 WHERE id = ? AND asked = 0", b.id)) await askRoomBooking(env, b);
+  }
+  for (const b of soon) {
+    if (await changed(env, "UPDATE room_bookings SET warned = 1 WHERE id = ? AND warned = 0", b.id)) await warnRoomBooking(env, b);
+  }
+}
+
+async function dropRoomBooking(env, row, byOwner) {
+  if (!(await changed(env, "DELETE FROM room_bookings WHERE id = ?", row.id))) return false;
+  const by = byOwner ? "" : " (отменено админом)";
+  await roomAnnounce(env, row.chat_id, `Бронь ${ROOM_GEN} отменена: ${roomSpan(env, row)}${by}.`);
+  return true;
 }
 
 function machineArg(body, prefix = "") {
@@ -883,40 +1150,78 @@ function typeArg(body) {
   return body.t;
 }
 
+async function ownerArg(env, chatId, me, body) {
+  if (body.owner === "unknown") return { owner: UNKNOWN, reporter: me };
+  if (body.owner != null && body.owner !== "me" && Number(body.owner) !== me.id) {
+    const p = await first(env, "SELECT * FROM people WHERE chat_id = ? AND user_id = ?", chatId, Number(body.owner));
+    if (!p) return { error: "Не нашёл этого человека." };
+    return { owner: { id: p.user_id, name: p.name, username: p.username }, reporter: me };
+  }
+  return { owner: me, reporter: null };
+}
+
+function occupiedText(mtype, num, kind) {
+  return LEFTOVER.has(kind)
+    ? `В ${MACHINES[mtype].prep} ${num} ещё лежат чужие вещи. Их нужно забрать или переложить.`
+    : `${mname(mtype, num)} уже занята.`;
+}
+
+function clearOwnerHolds(env, chatId, mtype, num, owner) {
+  return env.DB.batch([
+    env.DB.prepare("DELETE FROM bookings WHERE chat_id = ? AND mtype = ? AND num = ? AND user_id = ?").bind(chatId, mtype, num, owner.id),
+    env.DB.prepare("DELETE FROM queue WHERE chat_id = ? AND mtype = ? AND user_id = ?").bind(chatId, mtype, owner.id),
+  ]);
+}
+
 const ACTIONS = {
   async take(env, chatId, me, admin, body) {
     const [mtype, num] = machineArg(body);
     const minutes = parseMinutes(body.time ?? "");
     if (minutes === null) return `Не понял время. Введи как на дисплее: 1:05 или 45 (от 1 до ${MAX_MINUTES} минут).`;
-    let owner = me;
-    let reporter = null;
-    if (body.owner === "unknown") {
-      owner = UNKNOWN;
-      reporter = me;
-    } else if (body.owner != null && body.owner !== "me" && Number(body.owner) !== me.id) {
-      const p = await first(env, "SELECT * FROM people WHERE chat_id = ? AND user_id = ?", chatId, Number(body.owner));
-      if (!p) return "Не нашёл этого человека.";
-      owner = { id: p.user_id, name: p.name, username: p.username };
-      reporter = me;
-    }
+    const { owner, reporter, error } = await ownerArg(env, chatId, me, body);
+    if (error) return error;
     const row = await getMachine(env, chatId, mtype, num);
-    if (row && !(["hold", "done"].includes(row.kind) && row.user_id === owner.id)) {
-      return row.kind === "done" || row.kind === "parked"
-        ? `В ${MACHINES[mtype].acc} ${num} ещё лежат чужие вещи. Их нужно забрать или переложить.`
-        : `${mname(mtype, num)} уже занята.`;
+    if (row && !(REPLACEABLE.has(row.kind) && (row.user_id === owner.id || row.reporter_id === me.id))) {
+      return occupiedText(mtype, num, row.kind);
     }
     const t = now();
     const booked = await upcomingBooking(env, chatId, mtype, num, owner.id);
     if (booked && t + minutes * 60 > booked.at) {
       return `${mname(mtype, num)} забронирована на ${clock(env, booked.at)}, а программа закончится позже. Выбери другую машину.`;
     }
-    if (!(await occupy(env, chatId, mtype, num, owner, t, t + minutes * 60, "run", reporter))) return `${mname(mtype, num)} уже занята.`;
-    await env.DB.batch([
-      env.DB.prepare("DELETE FROM bookings WHERE chat_id = ? AND mtype = ? AND num = ? AND user_id = ?").bind(chatId, mtype, num, owner.id),
-      env.DB.prepare("DELETE FROM queue WHERE chat_id = ? AND mtype = ? AND user_id = ?").bind(chatId, mtype, owner.id),
-    ]);
+    const replaces = row ? row.started_at : null;
+    if (!(await occupy(env, chatId, mtype, num, owner, t, t + minutes * 60, "run", reporter, replaces))) return `${mname(mtype, num)} уже занята.`;
+    await clearOwnerHolds(env, chatId, mtype, num, owner);
     if (reporter && owner.id) {
       await notice(env, chatId, owner, `${mname(mtype, num)} отмечена как занятая твоими вещами (отметил: ${await label(env, chatId, me)}). Напомню, когда закончит.`);
+    }
+    return null;
+  },
+
+  async load(env, chatId, me, admin, body) {
+    const [mtype, num] = machineArg(body);
+    const { owner, reporter, error } = await ownerArg(env, chatId, me, body);
+    if (error) return error;
+    const row = await getMachine(env, chatId, mtype, num);
+    if (row) {
+      if (row.kind === "loaded") return `${mname(mtype, num)} уже отмечена как занятая вещами.`;
+      if (!(row.kind === "hold" && row.user_id === owner.id)) return occupiedText(mtype, num, row.kind);
+    }
+    const t = now();
+    const replaces = row ? row.started_at : null;
+    if (!(await occupy(env, chatId, mtype, num, owner, t, t + CLOTHES_HOURS * 3600, "loaded", reporter, replaces))) {
+      return `${mname(mtype, num)} уже занята.`;
+    }
+    await clearOwnerHolds(env, chatId, mtype, num, owner);
+    if (reporter && owner.id) {
+      await notice(
+        env,
+        chatId,
+        owner,
+        `${mname(mtype, num)} отмечена как занятая твоими вещами, программа не запущена (отметил: ${await label(env, chatId, me)}). ` +
+          `Забери вещи или запусти программу в приложении — через ${CLOTHES_HOURS} ч отметка снимется сама.`,
+        true
+      );
     }
     return null;
   },
@@ -955,11 +1260,18 @@ const ACTIONS = {
   async queue(env, chatId, me, admin, body) {
     const mtype = typeArg(body);
     const cfg = MACHINES[mtype];
-    if (await position(env, chatId, mtype, me.id)) return `Ты уже в очереди на ${cfg.acc}.`;
-    const busy = await busyMap(env, chatId);
-    const soon = await bookedSoon(env, chatId, mtype);
-    const anyFree = NUMBERS.some((n) => !busy.has(key(mtype, n)) && !soon.has(n));
-    if (anyFree && !(await queueOf(env, chatId, mtype)).length) return `Есть свободная ${cfg.name.toLowerCase()} — просто займи её.`;
+    const [already, takenRows, soonRows, counted] = await batch(
+      env,
+      q(env, "SELECT 1 AS ok FROM queue WHERE chat_id = ? AND mtype = ? AND user_id = ?", chatId, mtype, me.id),
+      q(env, takenSql, chatId, mtype),
+      q(env, soonSql, chatId, mtype, soonAt()),
+      q(env, "SELECT COUNT(*) AS n FROM queue WHERE chat_id = ? AND mtype = ?", chatId, mtype)
+    );
+    if (already.length) return `Ты уже в очереди на ${cfg.acc}.`;
+    const taken = new Set(takenRows.map((r) => r.num));
+    const soon = new Set(soonRows.map((r) => r.num));
+    const anyFree = NUMBERS.some((n) => !taken.has(n) && !soon.has(n));
+    if (anyFree && !counted[0].n) return `Есть свободная ${cfg.name.toLowerCase()} — просто займи её.`;
     await enqueue(env, chatId, mtype, me, 1);
     await dispatch(env, chatId, mtype);
     return null;
@@ -1024,7 +1336,7 @@ const ACTIONS = {
     const src = machineArg(body, "f");
     const dest = body.to === "machine" ? machineArg(body, "t") : null;
     const row = await getMachine(env, chatId, ...src);
-    if (!row || (row.kind !== "done" && row.kind !== "parked")) return "В этой машине нет оставленных вещей.";
+    if (!row || !LEFTOVER.has(row.kind)) return "В этой машине нет оставленных вещей.";
     if (dest) {
       if (key(...dest) === key(...src)) return "Выбери другую машину.";
       if (await getMachine(env, chatId, ...dest)) return `${mname(...dest)} занята.`;
@@ -1123,16 +1435,14 @@ const ACTIONS = {
     const row = await first(env, "SELECT * FROM room_bookings WHERE id = ? AND chat_id = ?", Number(body.id), chatId);
     if (!row) return "Эта бронь уже отменена.";
     if (row.user_id !== me.id && !admin) return "Отменить может только тот, кто бронировал, или админ чата.";
-    await env.DB.prepare("DELETE FROM room_bookings WHERE id = ?").bind(row.id).run();
-    const by = row.user_id === me.id ? "" : " (отменено админом)";
-    await roomAnnounce(env, chatId, `Бронь игровой отменена: ${dayLabel(env, row.starts)}, ${clock(env, row.starts)}–${clock(env, row.ends)}${by}.`);
+    if (!(await dropRoomBooking(env, row, row.user_id === me.id))) return "Эта бронь уже отменена.";
     return null;
   },
 };
 
 async function apiState(request, env) {
   const { chatId, me, admin, section } = await authorize(request, env);
-  await tick(env);
+  await tick(env, chatId);
   return json(await state(env, chatId, me, admin, section));
 }
 
@@ -1146,12 +1456,12 @@ async function apiAction(request, env) {
   }
   const action = Object.hasOwn(ACTIONS, body.action) ? ACTIONS[body.action] : null;
   if (!action) throw new ApiError("Некорректный запрос.");
-  await tick(env);
+  await tick(env, chatId);
   const error = await action(env, chatId, { id: me.id, name: me.name, username: me.username }, admin, body);
   if (error) throw new ApiError(error);
   if (body.action === "privacy") me.hidden = !!body.hidden;
-  await updatePinned(env, chatId);
-  await updateRoomBoard(env, chatId);
+  if (ROOM_ACTIONS.has(body.action)) await updateRoomBoard(env, chatId);
+  else await updatePinned(env, chatId);
   return json(await state(env, chatId, me, admin, section));
 }
 

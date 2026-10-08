@@ -9,6 +9,8 @@ def init_p(uid, name, username):
     return urlencode(f)
 PA, PB = init_p(1, "Аня", "anya"), init_p(2, "Боря", None)
 topic = lambda text, th: http("/telegram", {"message": {"message_id": 7, "text": text, "message_thread_id": th, "is_topic_message": True, "chat": {"id": CH, "type": "supergroup", "is_forum": True}}}, {"X-Telegram-Bot-Api-Secret-Token": SECRET})
+def sql(q, *a): db.execute(q, a); db.commit()
+tap = lambda bid, what, uid: http("/telegram", {"callback_query": {"id": "cb1", "data": f"r{what}:{bid}", "from": {"id": uid, "first_name": "X"}, "message": {"message_id": 500, "chat": {"id": uid, "type": "private"}}}}, {"X-Telegram-Bot-Api-Secret-Token": SECRET})
 db.execute("DELETE FROM room_bookings"); db.commit()
 print("--- /playroom in topic 77")
 topic("/playroom", 77)
@@ -36,4 +38,32 @@ print("--- laundry section still separate; laundry app link still works")
 st, d = api(ANYA); assert d["section"] == "laundry"
 cron()
 print("pinned:", db.execute("SELECT text FROM pboards").fetchone()[0].replace("\n", " | "))
+print("--- вечером спрашиваем про завтрашние брони, кнопка «да» оставляет бронь")
+db.execute("DELETE FROM room_bookings"); db.commit()
+st, d = api(PB, {"action": "room_book", "starts": tom + 15 * 3600, "ends": tom + 17 * 3600, "reason": "Кино"}); assert st == 200, d
+bid = d["room"]["bookings"][0]["id"]
+sql("UPDATE room_bookings SET created_at = ? WHERE id = ?", 0, bid)
+cron()
+assert db.execute("SELECT asked FROM room_bookings WHERE id = ?", (bid,)).fetchone()[0] == 1, "бронь не отмечена как спрошенная"
+tap(bid, "k", 2)
+st, d = api(PB); assert [b["id"] for b in d["room"]["bookings"]] == [bid], d["room"]["bookings"]
+print("--- спрашиваем один раз")
+cron()
+st, d = api(PB); assert [b["id"] for b in d["room"]["bookings"]] == [bid], d["room"]["bookings"]
+print("--- кнопка «нет» удаляет бронь, чужой палец ничего не делает")
+tap(bid, "c", 1)
+st, d = api(PB); assert [b["id"] for b in d["room"]["bookings"]] == [bid], "отменить смог не хозяин"
+tap(bid, "c", 2)
+st, d = api(PB); assert d["room"]["bookings"] == [], d["room"]["bookings"]
+tap(bid, "c", 2)
+print("--- за полчаса до начала приходит напоминание")
+db.execute("DELETE FROM room_bookings"); db.commit()
+soon = int((time.time() + 20 * 60) // s) * s
+st, d = api(PA, {"action": "room_book", "starts": soon, "ends": soon + 2 * s}); assert st == 200, d
+bid = d["room"]["bookings"][0]["id"]
+sql("UPDATE room_bookings SET created_at = ? WHERE id = ?", 0, bid)
+cron()
+assert db.execute("SELECT warned FROM room_bookings WHERE id = ?", (bid,)).fetchone()[0] == 1, "напоминание не отправлено"
+tap(bid, "c", 1)
+st, d = api(PA); assert d["room"]["bookings"] == [], d["room"]["bookings"]
 print("ROOM TESTS OK")

@@ -8,6 +8,7 @@ crons = ["* * * * *"]
 [vars]
 APP_SHORT_NAME = "techfloor"
 TZ_NAME = "Europe/Moscow"
+ROOM_REMIND_HOUR = "0"
 TELEGRAM_API = "http://127.0.0.1:8799"
 
 [[d1_databases]]

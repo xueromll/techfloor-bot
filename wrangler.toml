@@ -9,6 +9,7 @@ crons = ["* * * * *"]
 [vars]
 APP_SHORT_NAME = "techfloor"
 TZ_NAME = "Asia/Yekaterinburg"
+ROOM_REMIND_HOUR = "18"
 
 [[d1_databases]]
 binding = "DB"
