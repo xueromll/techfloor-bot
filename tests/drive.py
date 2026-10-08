@@ -1,34 +1,9 @@
-import glob, hashlib, hmac, json, sqlite3, time, urllib.request, urllib.error
-from urllib.parse import urlencode
-B = "http://127.0.0.1:8787"; TOKEN = "123456:TESTTOKEN"; SECRET = "testsecret123"; CH = -1001234
+import time
+from common import *
 
-def http(path, body=None, headers=None):
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(B + path, data=data, method="POST" if data else "GET", headers={"Content-Type": "application/json", **(headers or {})})
-    try:
-        with urllib.request.urlopen(req) as r: raw, st = r.read().decode(), r.status
-    except urllib.error.HTTPError as e: raw, st = e.read().decode(), e.code
-    try: return st, json.loads(raw)
-    except ValueError: return st, raw
-
-def init(uid, name, username):
-    f = {"auth_date": str(int(time.time())), "start_param": str(CH), "user": json.dumps({"id": uid, "first_name": name, "username": username}, ensure_ascii=False)}
-    dcs = "\n".join(f"{k}={v}" for k, v in sorted(f.items()))
-    f["hash"] = hmac.new(hmac.new(b"WebAppData", TOKEN.encode(), hashlib.sha256).digest(), dcs.encode(), hashlib.sha256).hexdigest()
-    return urlencode(f)
-
-ANYA, BORYA, VOVA, GALYA = init(1, "Аня", "anya"), init(2, "Боря", None), init(3, "Вова", "vova"), init(4, "Галя", "galya")
-api = lambda who, body=None: http("/api/action" if body else "/api/state", body, {"X-Init-Data": who})
-def cron(): http("/__scheduled?cron=*+*+*+*+*"); time.sleep(2)
-def m(d, t, n): return next(x for x in d["machines"] if x["t"] == t and x["n"] == n)
-def err(d): return d.get("error", "") if isinstance(d, dict) else str(d)
-hook = lambda text: http("/telegram", {"message": {"message_id": 5, "text": text, "chat": {"id": CH, "type": "supergroup"}}}, {"X-Telegram-Bot-Api-Secret-Token": SECRET})
-
-st, txt = http("/setup?key=" + SECRET); assert "подключён" in txt, txt
-db = sqlite3.connect([p for p in glob.glob(".wrangler/state/v3/d1/**/*.sqlite", recursive=True) if "metadata" not in p][0])
-def sql(q, *a): db.execute(q, a); db.commit()
-hook("/board")
-for who in (ANYA, BORYA, VOVA, GALYA): assert api(who)[0] == 200
+db = start()
+wipe()
+sql("UPDATE people SET hidden = 0")
 
 print("--- booking a specific machine shows on the grid")
 st, d = api(BORYA); slots = d["slots"]
@@ -66,17 +41,27 @@ st, d = api(ANYA, {"action": "queue", "t": "w"}); assert st == 200, d
 st, d = api(ANYA); assert m(d, "w", 7)["status"] == "free" and d["queue"]["w"][0]["id"] == 1, (m(d, "w", 7), d["queue"])
 
 print("--- no limit: Аня takes 4 machines")
-sql("DELETE FROM machines WHERE chat_id = ?", CH)
+wipe("machines")
 for n in (1, 2, 3, 4):
     st, d = api(ANYA, {"action": "take", "t": "w", "n": n, "time": "50"}); assert st == 200, d
 print("--- warning: none for 10-min programme, real minutes for longer")
-sql("DELETE FROM machines WHERE chat_id = ?", CH)
+wipe("machines")
 api(ANYA, {"action": "take", "t": "w", "n": 9, "time": "10"}); cron()
 api(ANYA, {"action": "take", "t": "w", "n": 10, "time": "20"})
 sql("UPDATE machines SET ends_at = ? WHERE mtype='w' AND num=10", time.time() + 14 * 60 + 10); cron()
 
 print("--- privacy: own entries say Аноним (это ты)")
-st, d = api(BORYA, {"action": "privacy", "hidden": True}); assert d["me"]["hidden"] and m(d, "d", 5).get("owner", {}).get("name", "Аноним (это ты)") in ("Аноним (это ты)",) or True
+st, d = api(BORYA, {"action": "privacy", "hidden": True}); assert d["me"]["hidden"], d["me"]
 st, d = api(BORYA, {"action": "take", "t": "w", "n": 4, "time": "40"}); assert m(d, "w", 4)["owner"]["name"] == "Аноним (это ты)", m(d, "w", 4)
 st, d = api(VOVA); assert m(d, "w", 4)["owner"]["name"] == "Аноним", m(d, "w", 4)
+st, d = api(BORYA, {"action": "privacy", "hidden": False}); assert not d["me"]["hidden"], d["me"]
+print("--- время: 1,5 это полтора часа, 0,5 полчаса, а пробел между цифрами не склеивается")
+for text, want in (("1,5", 90), ("0,5", 30), ("2,5", 150), ("1:05", 65), ("1,05", 65), ("1,30", 90), ("45", 45), ("2ч", 120), ("1 ч 30", 90)):
+    wipe("machines")
+    st, d = api(ANYA, {"action": "take", "t": "w", "n": 1, "time": text}); assert st == 200, (text, d)
+    got = round((m(d, "w", 1)["ends"] - d["now"]) / 60)
+    assert abs(got - want) <= 1, (text, got, want)
+wipe("machines")
+for text in ("1 5", "301", "6,0", "1,60", "0", "полтора"):
+    st, d = api(ANYA, {"action": "take", "t": "w", "n": 1, "time": text}); assert "Не понял время" in err(d), (text, d)
 print("ALL CF TESTS OK")

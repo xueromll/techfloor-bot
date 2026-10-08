@@ -200,6 +200,7 @@ async function cronRun(env) {
     console.error("Cron tick failed", e);
     await env.DB.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('cron_error', ?)").bind(`${new Date().toISOString()} ${e}`).run();
   }
+  await env.DB.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('cron_done', ?)").bind(now()).run();
 }
 
 const now = () => Date.now() / 1000;
@@ -306,20 +307,26 @@ function clock(env, ts) {
 }
 
 function parseMinutes(text) {
-  const t = String(text).trim().toLowerCase().replace(/\s/g, "");
-  let match = t.match(/^(\d{1,2})[:.,чh](\d{1,2})(?:мин|м|m)?$/);
-  let total;
+  const bound = (n) => (n >= 1 && n <= MAX_MINUTES ? n : null);
+  const raw = String(text).trim().toLowerCase();
+  if (/\d\s+\d/.test(raw)) return null;
+  const t = raw.replace(/\s+/g, "");
+  let match = t.match(/^(\d{1,2})[:чh](\d{1,2})$/);
   if (match) {
-    const hours = Number(match[1]);
-    const minutes = Number(match[2]);
-    if (minutes >= 60) return null;
-    total = hours * 60 + minutes;
-  } else {
-    match = t.match(/^(\d{1,3})(?:мин|м|m)?$/);
-    if (!match) return null;
-    total = Number(match[1]);
+    if (Number(match[2]) >= 60) return null;
+    return bound(Number(match[1]) * 60 + Number(match[2]));
   }
-  return total >= 1 && total <= MAX_MINUTES ? total : null;
+  match = t.match(/^(\d{1,2})[.,](\d{1,2})(ч|h|час[а-я]*)?$/);
+  if (match) {
+    if (match[2].length === 1 || match[3]) return bound(Math.round(Number(`${match[1]}.${match[2]}`) * 60));
+    if (Number(match[2]) >= 60) return null;
+    return bound(Number(match[1]) * 60 + Number(match[2]));
+  }
+  match = t.match(/^(\d{1,2})(?:ч|h|час[а-я]*)$/);
+  if (match) return bound(Number(match[1]) * 60);
+  match = t.match(/^(\d{1,3})(?:мин[а-я]*|м|m)?$/);
+  if (match) return bound(Number(match[1]));
+  return null;
 }
 
 function localMidnight(env, daysAhead) {
@@ -1036,6 +1043,7 @@ async function state(env, chatId, me, admin, section = "laundry") {
     ironing: IRONING_BOARD,
     claim: CLAIM_MINUTES,
     clothesHours: CLOTHES_HOURS,
+    maxMinutes: MAX_MINUTES,
     bookingGap: BOOKING_GAP_MINUTES,
     machines,
     queue,
@@ -1177,7 +1185,7 @@ const ACTIONS = {
   async take(env, chatId, me, admin, body) {
     const [mtype, num] = machineArg(body);
     const minutes = parseMinutes(body.time ?? "");
-    if (minutes === null) return `Не понял время. Введи как на дисплее: 1:05 или 45 (от 1 до ${MAX_MINUTES} минут).`;
+    if (minutes === null) return `Не понял время. Введи минуты (45), часы с минутами (1:05) или полтора часа как 1,5 — от 1 до ${MAX_MINUTES} минут.`;
     const { owner, reporter, error } = await ownerArg(env, chatId, me, body);
     if (error) return error;
     const row = await getMachine(env, chatId, mtype, num);

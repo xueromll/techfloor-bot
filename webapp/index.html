@@ -81,6 +81,9 @@
   label { display: block; margin-bottom: 6px; color: var(--hint); font-size: 13px; }
   .chips { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 6px 0 10px; }
   .chips.six { grid-template-columns: repeat(6, 1fr); }
+  .chips.three { grid-template-columns: repeat(3, 1fr); }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .total { text-align: center; color: var(--hint); font-size: 13px; margin: 10px 0 0; min-height: 18px; }
   .chip { border: 0; border-radius: 9px; padding: 10px 0; font: inherit; font-weight: 600; background: rgba(128, 128, 128, 0.14); color: var(--text); cursor: pointer; }
   .label { font-size: 13px; color: var(--hint); margin-top: 8px; }
   #sheet[hidden] { display: none; }
@@ -138,7 +141,21 @@ function left(ts) {
 }
 function leftShort(ts) {
   const m = minutesLeft(ts);
-  return m < 60 ? `${m} мин` : `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`;
+  return m < 60 ? `${m} мин` : `${Math.floor(m / 60)}ч${String(m % 60).padStart(2, "0")}`;
+}
+
+function duration(m) {
+  if (m < 60) return `${m} мин`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return rest ? `${h} ч ${String(rest).padStart(2, "0")} мин` : `${h} ч`;
+}
+
+function durationShort(m) {
+  if (m < 60) return `${m} мин`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return rest ? `${h}ч${rest}` : `${h} ч`;
 }
 
 function btn(text, onclick, kind) {
@@ -272,7 +289,6 @@ function openMachine(m) {
   }
   if (m.status === "free" || (["hold", "done", "loaded"].includes(m.status) && (mine || marked))) {
     const pickOwner = m.status === "free" || m.status === "loaded";
-    const input = el("input", { type: "text", inputmode: "decimal", placeholder: "1:05 или 45", autocomplete: "off" });
     const owner = el("select", {},
       el("option", { value: "me" }, "Мои"),
       pickOwner ? [
@@ -283,10 +299,40 @@ function openMachine(m) {
       if (m.owner.id === 0) owner.value = "unknown";
       else if (!mine && S.people.some((p) => p.id === m.owner.id)) owner.value = String(m.owner.id);
     }
-    const go = () => act({ action: "take", t: m.t, n: m.n, time: input.value, owner: owner.value });
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+    const maxHours = Math.floor(S.maxMinutes / 60);
+    const hours = el("input", { type: "number", inputmode: "numeric", min: 0, max: maxHours, step: 1, value: 0 });
+    const mins = el("input", { type: "number", inputmode: "numeric", min: 0, max: 59, step: 1, value: 0 });
+    const total = () => {
+      const raw = (Number(hours.value) || 0) * 60 + (Number(mins.value) || 0);
+      return Math.max(0, Math.min(S.maxMinutes, raw));
+    };
+    const summary = el("p", { class: "total" });
+    const sync = () => {
+      const t = total();
+      summary.replaceChildren(t ? `Итого ${duration(t)}, до ${clock(now() + t * 60)}` : "Укажи, сколько осталось по дисплею");
+    };
+    const preset = (v) => () => {
+      hours.value = Math.floor(v / 60);
+      mins.value = v % 60;
+      sync();
+    };
+    const go = () => {
+      if (!total()) return;
+      act({ action: "take", t: m.t, n: m.n, time: String(total()), owner: owner.value });
+    };
+    for (const field of [hours, mins]) {
+      field.addEventListener("input", sync);
+      field.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+    }
+    sync();
     body.push(
-      el("label", {}, "Сколько показывает дисплей машины?"), input,
+      el("label", {}, "Сколько осталось по дисплею машины?"),
+      el("div", { class: "chips three" }, [30, 45, 60, 90, 120, 150].map((v) =>
+        el("button", { class: "chip", onclick: preset(v) }, durationShort(v)))),
+      el("div", { class: "pair" },
+        el("div", {}, el("label", {}, "часы"), hours),
+        el("div", {}, el("label", {}, "минуты"), mins)),
+      summary,
       el("label", { style: "margin-top:10px" }, "Чьи вещи?"), owner,
       btn(m.status === "free" ? "Занять" : "Запустить программу", go));
     if (m.status === "free") {
