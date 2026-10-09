@@ -56,4 +56,91 @@ cron()
 assert one("SELECT warned FROM room_bookings WHERE id = ?", bid) == 1, "напоминание не отправлено"
 tap(bid, "c", 1)
 st, d = api(PANYA); assert d["room"]["bookings"] == [], d["room"]["bookings"]
+print("--- открытые события: «Я приду», на закрытые и свои не записываются")
+wipe("room_bookings", "room_joins")
+PGALYA = init(4, "Галя", "galya", start=f"{CH}_p")
+host, PHOST = fresh("Хост", start=f"{CH}_p")
+ev_at = lambda d: next(x for x in d["room"]["bookings"] if x["id"] == ev["id"])
+st, d = api(PHOST, {"action": "room_book", "starts": tom + 18 * 3600, "ends": tom + 20 * 3600, "reason": "Мафия", "public": True}); assert st == 200, d
+ev = d["room"]["bookings"][0]; assert ev["public"] and ev["going"] == [] and not ev["joined"] and ev["capacity"] is None, ev
+st, d = api(PANYA, {"action": "room_book", "starts": tom + 21 * 3600, "ends": tom + 22 * 3600, "public": "yes", "capacity": 5}); assert st == 200, d
+priv = next(x for x in d["room"]["bookings"] if x["starts"] == tom + 21 * 3600); assert not priv["public"] and priv["capacity"] is None, priv
+st, d = api(PHOST, {"action": "room_join", "id": ev["id"]}); assert "твоё" in err(d), d
+st, d = api(PBORYA, {"action": "room_join", "id": priv["id"]}); assert "закрытая" in err(d), d
+st, d = api(PBORYA, {"action": "room_join", "id": 10 ** 9}); assert "отменено" in err(d), d
+for _ in range(2): st, d = api(PGALYA, {"action": "room_join", "id": ev["id"]}); assert st == 200, d
+st, d = api(PANYA, {"action": "room_join", "id": ev["id"]}); assert st == 200, d
+g = ev_at(d); assert [p["name"] for p in g["going"]] == ["Галя", "Аня"] and g["joined"], g
+st, d = api(PBORYA); assert not ev_at(d)["joined"] and len(ev_at(d)["going"]) == 2, ev_at(d)
+st, d = api(PGALYA, {"action": "room_leave", "id": ev["id"]}); assert [p["name"] for p in ev_at(d)["going"]] == ["Аня"], ev_at(d)
+print("--- открытое событие «до N человек»: лишним — «мест нет»; без лимита — сколько угодно")
+nine = {"action": "room_book", "starts": tom + 9 * 3600, "ends": tom + 10 * 3600, "public": True}
+for bad in (0, -1, 101, 1.5, "2", True):
+    st, d = api(PHOST, {**nine, "capacity": bad}); assert "от 1 до 100" in err(d), (bad, d)
+before = len(sent())
+st, d = api(PHOST, {**nine, "reason": "Настолки", "capacity": 2}); assert st == 200, d
+assert any("Ждём до 2 чел." in x["text"] for x in sent()[before:]), sent()[before:]
+capped = next(x for x in d["room"]["bookings"] if x["starts"] == tom + 9 * 3600); assert capped["capacity"] == 2, capped
+for P in (PGALYA, PBORYA, PGALYA): st, d = api(P, {"action": "room_join", "id": capped["id"]}); assert st == 200, d
+st, d = api(PANYA, {"action": "room_join", "id": capped["id"]}); assert "Мест больше нет" in err(d), d
+assert one("SELECT COUNT(*) FROM room_joins WHERE booking_id = ?", capped["id"]) == 2
+st, d = api(PBORYA, {"action": "room_leave", "id": capped["id"]}); assert st == 200, d
+st, d = api(PANYA, {"action": "room_join", "id": capped["id"]}); assert st == 200, d
+got = next(x for x in d["room"]["bookings"] if x["id"] == capped["id"]); assert [p["name"] for p in got["going"]] == ["Галя", "Аня"], got
+before = len(sent())
+st, d = api(PANYA, {"action": "room_book", "starts": tom + 6 * 3600, "ends": tom + 7 * 3600, "public": True, "capacity": None}); assert st == 200, d
+assert any("не ограничено" in x["text"] for x in sent()[before:]), sent()[before:]
+wide = next(x for x in d["room"]["bookings"] if x["starts"] == tom + 6 * 3600); assert wide["capacity"] is None, wide
+for _ in range(5): st, d = api(fresh("Гость", start=f"{CH}_p")[1], {"action": "room_join", "id": wide["id"]}); assert st == 200, d
+assert one("SELECT COUNT(*) FROM room_joins WHERE booking_id = ?", wide["id"]) == 5
+print("--- двое жмут «Я приду» на последнее место одновременно — проходит ровно один")
+for r in range(4):
+    st, d = api(PANYA, {"action": "room_book", "starts": tom + (11 + r) * 3600, "ends": tom + (12 + r) * 3600, "public": True, "capacity": 1}); assert st == 200, d
+    last = next(x for x in d["room"]["bookings"] if x["starts"] == tom + (11 + r) * 3600)
+    a, b = fresh("Раз", start=f"{CH}_p")[1], fresh("Два", start=f"{CH}_p")[1]
+    res = parallel(lambda: api(a, {"action": "room_join", "id": last["id"]}), lambda: api(b, {"action": "room_join", "id": last["id"]}))
+    assert sorted(st for st, _ in res) == [200, 400], res
+    assert one("SELECT COUNT(*) FROM room_joins WHERE booking_id = ?", last["id"]) == 1
+print("--- закреп показывает, сколько идёт на сегодняшнее открытое событие")
+st, d = api(PANYA, {"action": "room_book", "starts": cur, "ends": cur + s, "reason": "Приставка", "public": True}); assert st == 200, d
+today = next(x for x in d["room"]["bookings"] if x["starts"] == cur)
+st, d = api(PGALYA, {"action": "room_join", "id": today["id"]}); assert st == 200, d
+assert "открытое событие, идут: 1)" in one("SELECT text FROM pboards WHERE chat_id = ?", CH)
+sql("UPDATE room_bookings SET capacity = 3 WHERE id = ?", today["id"])
+st, d = api(PBORYA, {"action": "room_join", "id": today["id"]}); assert st == 200, d
+assert "открытое событие, идут: 2 из 3)" in one("SELECT text FROM pboards WHERE chat_id = ?", CH)
+print("--- за полчаса до начала записавшимся приходит напоминание с кнопкой «Не приду»")
+sql("UPDATE room_bookings SET starts = ?, ends = ?, created_at = 0, warned = 1 WHERE id = ?", time.time() + 15 * 60, time.time() + 75 * 60, ev["id"])
+sql("UPDATE room_joins SET created_at = 0 WHERE booking_id = ?", ev["id"])
+before = len(sent())
+cron()
+assert one("SELECT warned FROM room_joins WHERE booking_id = ? AND user_id = 1", ev["id"]) == 1, "записавшемуся не напомнили"
+assert any(x["chat_id"] == 1 and "идёшь" in x["text"] for x in sent()[before:]), sent()[before:]
+tap(ev["id"], "l", 1)
+assert one("SELECT COUNT(*) FROM room_joins WHERE booking_id = ?", ev["id"]) == 0, "кнопка «Не приду» не сработала"
+print("--- отмена события снимает записи и пишет записавшимся")
+st, d = api(PGALYA, {"action": "room_join", "id": ev["id"]}); assert st == 200, d
+before = len(sent())
+st, d = api(PHOST, {"action": "room_cancel", "id": ev["id"]}); assert st == 200, d
+assert one("SELECT COUNT(*) FROM room_joins WHERE booking_id = ?", ev["id"]) == 0
+assert any(x["chat_id"] == 4 and "отменено" in x["text"] for x in sent()[before:]), sent()[before:]
+st, d = api(PANYA, {"action": "admin_reset_room"}); assert st == 200, d
+assert one("SELECT COUNT(*) FROM room_joins") == 0, "сброс игровой оставил записи"
+print("--- /unpin убирает закреп только из своей темы, /unpin all — отовсюду")
+topic("/unpin", 5)
+assert rows("SELECT thread_id FROM pboards WHERE chat_id = ?", CH) == [(77,)]
+assert one("SELECT COUNT(*) FROM boards WHERE chat_id = ?", CH) == 1
+topic("/unpin", 77)
+assert one("SELECT COUNT(*) FROM pboards WHERE chat_id = ?", CH) == 0
+assert one("SELECT COUNT(*) FROM boards WHERE chat_id = ?", CH) == 1
+st, d = api(ANYA); assert st == 200 and d["section"] == "laundry", d
+topic("/playroom", 77)
+hook("/unpin all", sender={"id": 2, "first_name": "Боря"})
+assert one("SELECT COUNT(*) FROM boards WHERE chat_id = ?", CH) == 1, "не-админ открепил бота"
+hook("/unpin all")
+assert one("SELECT COUNT(*) FROM boards WHERE chat_id = ?", CH) == 0
+assert one("SELECT COUNT(*) FROM pboards WHERE chat_id = ?", CH) == 0
+st, d = api(ANYA); assert st == 404, (st, d)
+hook("/board")
+topic("/playroom", 77)
 print("ROOM TESTS OK")

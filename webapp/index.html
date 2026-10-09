@@ -75,6 +75,11 @@
   .day.today { font-weight: 700; }
   .day.sel { background: var(--accent); color: var(--accent-text); }
   .day.has::after { content: ""; position: absolute; left: 50%; bottom: 4px; width: 5px; height: 5px; margin-left: -2.5px; border-radius: 50%; background: var(--hold); }
+  .day.open::after { background: var(--free); }
+  .badge { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 7px; border-radius: 6px; margin-left: 6px; vertical-align: 1px; }
+  .badge.open { background: rgba(46, 158, 91, 0.16); color: var(--free); }
+  .badge.closed { background: rgba(128, 128, 128, 0.14); color: var(--hint); }
+  .acts { display: flex; flex-direction: column; gap: 6px; align-items: stretch; flex: none; }
   .x:disabled { opacity: 0.3; }
   .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
   .toggle input { width: 22px; height: 22px; margin: 0; flex: none; accent-color: var(--accent); }
@@ -203,10 +208,14 @@ async function act(body) {
     closeSheet();
     if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
   } catch (e) {
-    if (tg && tg.showAlert) tg.showAlert(e.message); else alert(e.message);
+    warn(e.message);
   } finally {
     busy = false;
   }
+}
+
+function warn(text) {
+  if (tg && tg.showAlert) tg.showAlert(text); else alert(text);
 }
 
 function openSheet(title, body) {
@@ -493,14 +502,55 @@ const monthTitle = (ym) => {
   return cap(new Intl.DateTimeFormat("ru-RU", { timeZone: "UTC", month: "long", year: "numeric" }).format(new Date(Date.UTC(y, m - 1, 1)))).replace(/\s*г\.$/, "");
 };
 const roomWho = (b) => `${who(b.user)}${b.reason ? " — " + b.reason : ""}`;
+const roomDayOf = (ts) => R().days.find((d) => ts < d.end);
+const roomFull = (b) => b.capacity !== null && b.going.length >= b.capacity;
+const roomGoing = (b) => {
+  const names = b.going.map(who).join(", ");
+  if (b.capacity === null) return `${b.going.length ? `Идут: ${names}` : "Пока никто не записался"} · без ограничения по числу людей`;
+  return `Идут ${b.going.length} из ${b.capacity}${names ? `: ${names}` : ""}${roomFull(b) ? " · мест нет" : ""}`;
+};
+
+function roomActs(b) {
+  const acts = [];
+  if (b.public && !b.mine && b.ends > now()) {
+    acts.push(b.joined
+      ? el("button", { class: "btn small secondary", onclick: () => act({ action: "room_leave", id: b.id }) }, "Не приду")
+      : roomFull(b)
+        ? el("button", { class: "btn small", disabled: "disabled" }, "Мест нет")
+        : el("button", { class: "btn small", onclick: () => act({ action: "room_join", id: b.id }) }, "Я приду"));
+  }
+  if (b.mine || S.me.admin) acts.push(el("button", { class: "btn small secondary", onclick: () => act({ action: "room_cancel", id: b.id }) }, "Отменить"));
+  return acts.length ? el("div", { class: "acts" }, acts) : null;
+}
+
+function roomBadge(b) {
+  return b.public ? el("span", { class: "badge open" }, "открытое") : el("span", { class: "badge closed" }, "закрытое");
+}
 
 function roomStatusCard() {
   const cur = roomNow();
   const next = R().bookings.find((b) => b.starts > now());
   const text = cur
-    ? `Сейчас занята до ${when(cur.ends)}: ${roomWho(cur)}.`
-    : `Сейчас свободна.${next ? ` Следующая бронь — ${dayTitle(R().days.find((d) => next.starts < d.end))}, ${clock(next.starts)}.` : ""}`;
-  return el("section", { class: "card" }, el("p", { style: "margin:0" }, el("span", { class: "dot " + (cur ? "run" : "free"), style: "display:inline-block;margin-right:8px" }), text));
+    ? cur.public
+      ? `Сейчас идёт открытое событие до ${when(cur.ends)}: ${roomWho(cur)}. Можно присоединиться!`
+      : `Сейчас занята до ${when(cur.ends)}: ${roomWho(cur)}.`
+    : `Сейчас свободна.${next ? ` Следующая бронь — ${dayTitle(roomDayOf(next.starts))}, ${clock(next.starts)}.` : ""}`;
+  return el("section", { class: "card" }, el("p", { style: "margin:0" }, el("span", { class: "dot " + (cur ? (cur.public ? "free" : "run") : "free"), style: "display:inline-block;margin-right:8px" }), text));
+}
+
+function eventsCard() {
+  const list = R().bookings.filter((b) => b.public && b.ends > now()).slice(0, 10);
+  if (!list.length) return null;
+  return el("section", { class: "card" },
+    el("h2", {}, "Открытые события"),
+    el("p", { class: "hint", style: "margin:0 0 4px" }, "На них может прийти любой — отметься, чтобы организатор знал, сколько вас."),
+    list.map((b) => el("div", { class: "item" },
+      el("div", { class: "row" },
+        el("div", {},
+          el("div", {}, el("b", {}, `${dayTitle(roomDayOf(b.starts))}, ${clock(b.starts)}–${clock(b.ends)}`), b.starts <= now() ? " · сейчас" : ""),
+          el("div", { class: "hint" }, roomWho(b)),
+          el("div", { class: "hint" }, roomGoing(b))),
+        roomActs(b)))));
 }
 
 function calendarCard() {
@@ -514,7 +564,7 @@ function calendarCard() {
   for (let dd = 1; dd <= total; dd++) {
     const k = `${roomMonth}-${String(dd).padStart(2, "0")}`;
     const d = dayByKey(k);
-    const cls = ["day", d ? "" : "out", k === roomDay ? "sel" : "", d && d === R().days[0] ? "today" : "", d && roomOn(d).length ? "has" : ""].filter(Boolean).join(" ");
+    const cls = ["day", d ? "" : "out", k === roomDay ? "sel" : "", d && d === R().days[0] ? "today" : "", d && roomOn(d).length ? "has" : "", d && roomOn(d).some((b) => b.public) ? "open" : ""].filter(Boolean).join(" ");
     cells.push(el("button", { class: cls, disabled: d ? null : "disabled", onclick: () => { roomDay = k; render(); } }, dd));
   }
   const at = months.indexOf(roomMonth);
@@ -524,7 +574,7 @@ function calendarCard() {
       el("h2", { style: "margin:0" }, monthTitle(roomMonth)),
       el("button", { class: "x", disabled: at < months.length - 1 ? null : "disabled", onclick: () => { roomMonth = months[at + 1]; render(); } }, "›")),
     el("div", { class: "cal" }, ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((w) => el("span", { class: "wd" }, w)), cells),
-    el("div", { class: "legend hint" }, el("span", {}, el("i", { class: "dot hold" }), "есть брони")));
+    el("div", { class: "legend hint" }, el("span", {}, el("i", { class: "dot hold" }), "есть брони"), el("span", {}, el("i", { class: "dot free" }), "открытое событие")));
 }
 
 function freeRanges(d) {
@@ -550,9 +600,10 @@ function dayCard() {
       ? list.map((b) => el("div", { class: "item" },
           el("div", { class: "row" },
             el("div", {},
-              el("div", {}, el("b", {}, `${dayClock(d, Math.max(b.starts, d.start))}–${dayClock(d, Math.min(b.ends, d.end))}`), b.starts <= now() && b.ends > now() ? " · сейчас" : ""),
-              el("div", { class: "hint" }, roomWho(b))),
-            b.mine || S.me.admin ? el("button", { class: "btn small secondary", onclick: () => act({ action: "room_cancel", id: b.id }) }, "Отменить") : null)))
+              el("div", {}, el("b", {}, `${dayClock(d, Math.max(b.starts, d.start))}–${dayClock(d, Math.min(b.ends, d.end))}`), b.starts <= now() && b.ends > now() ? " · сейчас" : "", roomBadge(b)),
+              el("div", { class: "hint" }, roomWho(b)),
+              b.public ? el("div", { class: "hint" }, roomGoing(b)) : null),
+            roomActs(b))))
       : el("p", { class: "hint" }, "Броней нет."),
     el("p", { class: "hint", style: "margin:10px 0 0" }, free.length ? "Свободно: " + free.map(([a, b]) => `${dayClock(d, a)}–${dayClock(d, b)}`).join(", ") : "Свободного времени не осталось."),
     free.length ? btn("Забронировать", () => openRoomBook(d)) : null);
@@ -576,12 +627,54 @@ function openRoomBook(d) {
   startSel.addEventListener("change", fillEnds);
   fillEnds();
   const reason = el("input", { type: "text", maxlength: R().reasonLength, placeholder: "Например: настолки, день рождения", style: "font-size:16px;text-align:left" });
-  openSheet(`${R().name}: ${dayTitle(d)}`, [
+  const open = el("input", { type: "checkbox" });
+  const openHint = el("p", { class: "hint", style: "margin:6px 0 0" });
+  const capacity = el("input", { type: "number", inputmode: "numeric", min: 1, max: R().capacityMax, step: 1, placeholder: "Без ограничения", style: "font-size:16px;text-align:left" });
+  const capacityBox = el("div", {},
+    el("label", { style: "margin-top:10px" }, "Сколько людей ждёшь"),
+    capacity,
+    el("p", { class: "hint", style: "margin:6px 0 0" }, "Например, 10 — тогда записаться смогут первые 10 человек (ты не в счёт). Оставь пустым, если ограничения нет."));
+  const showOpen = () => {
+    openHint.textContent = open.checked
+      ? "Открытое: в чате позовут всех, любой сможет нажать «Я приду», а ты увидишь, кто идёт."
+      : "Закрытое: игровая просто занята за тобой, записаться на бронь нельзя.";
+    capacityBox.style.display = open.checked ? "" : "none";
+  };
+  open.addEventListener("change", showOpen);
+  showOpen();
+  const title = `${R().name}: ${dayTitle(d)}`;
+  const form = [
     el("label", {}, "Начало"), startSel,
     el("label", { style: "margin-top:10px" }, "Конец"), endSel,
     el("label", { style: "margin-top:10px" }, "Зачем бронируешь (необязательно)"), reason,
-    btn("Забронировать", () => act({ action: "room_book", starts: Number(startSel.value), ends: Number(endSel.value), reason: reason.value })),
-  ]);
+    el("label", { class: "toggle", style: "margin-top:14px" }, open, el("span", { style: "color:var(--text);font-size:15px" }, "Открытое событие — может прийти любой")),
+    openHint,
+    capacityBox,
+    btn("Забронировать", () => confirmRoomBook()),
+  ];
+  const confirmRoomBook = () => {
+    if (!startSel.value || !endSel.value) return;
+    const people = open.checked && capacity.value.trim() ? Number(capacity.value) : null;
+    if (people !== null && !(Number.isInteger(people) && people >= 1 && people <= R().capacityMax)) {
+      warn(`Число людей — от 1 до ${R().capacityMax}, или оставь поле пустым, если ограничения нет.`);
+      return;
+    }
+    const why = reason.value.replace(/\s+/g, " ").trim();
+    const line = (k, v) => el("div", { class: "item" }, el("div", { class: "hint" }, k), el("div", {}, el("b", {}, v)));
+    openSheet(title, [
+      el("p", { style: "margin:0 0 10px" }, "Всё верно?"),
+      line("Дата", dayTitle(d)),
+      line("Время", `с ${clock(Number(startSel.value))} до ${endSel.selectedOptions[0].textContent}`),
+      line("Зачем", why || "не указано"),
+      line("Бронь", open.checked ? "открытое событие — может прийти любой" : "закрытая — игровая просто занята за тобой"),
+      open.checked ? line("Ждёшь людей", people === null ? "без ограничения" : `до ${people}`) : null,
+      btn("Да, бронирую", () => act({
+        action: "room_book", starts: Number(startSel.value), ends: Number(endSel.value), reason: why, public: open.checked, capacity: people,
+      })),
+      btn("Нет, изменить", () => openSheet(title, form), "secondary"),
+    ]);
+  };
+  openSheet(title, form);
 }
 
 function laundryView() {
@@ -603,6 +696,7 @@ function roomView() {
   return [
     el("header", { class: "head" }, el("h1", {}, R().name)),
     roomStatusCard(),
+    eventsCard(),
     calendarCard(),
     dayCard(),
     adminCard("room"),
