@@ -59,7 +59,7 @@ const NOT_FROM_TELEGRAM = "Открой приложение через Telegram
 const HELP =
   "Привет! Я бот техэтажа общаги.\n\n" +
   "• Прачечная — стиралки и сушилки: что свободно, кто занял и сколько осталось, очередь, бронь, " +
-  "напоминания и отметки «внутри вещи, программа не запущена» и «переложил чужие вещи».\n" +
+  "напоминания и отметки «внутри чужие вещи, программа не запущена» и «переложил чужие вещи».\n" +
   "• Игровая — календарь: свободна ли она сейчас, брони на любой день и бронь своего времени. " +
   "Бронь может быть открытым событием — тогда любой может нажать «Я приду».\n\n" +
   "Как пользоваться: в чате общаги открой тему про стирку или про игровую и нажми кнопку " +
@@ -833,7 +833,7 @@ async function pinnedText(env, chatId) {
     `Свободно: ${counts.join(", ")}.\n` +
     (leftover ? `С вещами внутри: ${leftover}.\n` : "") +
     "\nОткрой приложение, чтобы занять машину, встать в очередь, забронировать, " +
-    "отметить, что внутри лежат вещи без программы, или что переложил чужие вещи."
+    "отметить, что внутри лежат чужие вещи без программы, или что переложил чужие вещи."
   );
 }
 
@@ -1580,18 +1580,12 @@ const ACTIONS = {
 
   async load(env, chatId, me, admin, body) {
     const [mtype, num] = machineArg(body);
-    const { owner, reporter } = ownerArg(me, body);
     const row = await getMachine(env, chatId, mtype, num);
-    if (row) {
-      if (row.kind === "loaded") return `${mname(mtype, num)} уже отмечена как занятая вещами.`;
-      if (!(row.kind === "hold" && row.user_id === owner.id)) return occupiedText(mtype, num, row.kind);
-    }
+    if (row) return row.kind === "loaded" ? `${mname(mtype, num)} уже отмечена как занятая вещами.` : occupiedText(mtype, num, row.kind);
     const t = now();
-    const replaces = row ? row.started_at : null;
-    if (!(await occupy(env, chatId, mtype, num, owner, t, t + CLOTHES_HOURS * 3600, "loaded", reporter, replaces))) {
+    if (!(await occupy(env, chatId, mtype, num, UNKNOWN, t, t + CLOTHES_HOURS * 3600, "loaded", me))) {
       return `${mname(mtype, num)} уже занята.`;
     }
-    await clearOwnerHolds(env, chatId, mtype, num, owner);
     return null;
   },
 

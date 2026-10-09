@@ -339,8 +339,8 @@ function openMachine(m) {
       el("label", { style: "margin-top:10px" }, "Чьи вещи?"), owner,
       btn(m.status === "free" ? "Занять" : "Запустить программу", go));
     if (m.status === "free") {
-      body.push(el("p", { class: "hint", style: "margin:10px 0 0" }, "Если вещи уже внутри, а программу никто не запускал — отметь машину занятой без таймера."));
-      body.push(btn("Вещи внутри, без программы", () => act({ action: "load", t: m.t, n: m.n, owner: owner.value }), "secondary"));
+      body.push(el("p", { class: "hint", style: "margin:10px 0 0" }, "В машине лежат чьи-то вещи, а программа не запущена? Отметь это — машина будет занята, пока вещи не заберут, а хозяин сможет нажать «Это мои вещи»."));
+      body.push(btn("Тут чужие вещи, без программы", () => act({ action: "load", t: m.t, n: m.n }), "secondary"));
     }
   }
   if (m.status !== "free" && m.status !== "hold" && m.owner.id === 0 && !marked) {

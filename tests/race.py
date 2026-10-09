@@ -20,7 +20,7 @@ for r in range(ROUNDS):
 print("--- параллельный claim: хозяин находится ровно один")
 for r in range(ROUNDS):
     wipe("machines")
-    assert api(ANYA, {"action": "load", "t": "d", "n": 2, "owner": "unknown"})[0] == 200
+    assert api(ANYA, {"action": "load", "t": "d", "n": 2})[0] == 200
     res = parallel(lambda: api(VOVA, {"action": "claim", "t": "d", "n": 2}),
                    lambda: api(GALYA, {"action": "claim", "t": "d", "n": 2}))
     ok = [i for i, (st, d) in enumerate(res) if st == 200]
@@ -42,7 +42,7 @@ for r in range(ROUNDS):
 print("--- параллельный move: вещи переложит один, проигравший не оставляет следов")
 for r in range(ROUNDS):
     wipe()
-    assert api(ANYA, {"action": "load", "t": "w", "n": 5, "owner": "unknown"})[0] == 200
+    assert api(ANYA, {"action": "load", "t": "w", "n": 5})[0] == 200
     res = parallel(lambda: api(BORYA, {"action": "move", "ft": "w", "fn": 5, "to": "machine", "tt": "w", "tn": 6}),
                    lambda: api(VOVA, {"action": "move", "ft": "w", "fn": 5, "to": "machine", "tt": "w", "tn": 7}))
     ok = [i for i, (st, d) in enumerate(res) if st == 200]
