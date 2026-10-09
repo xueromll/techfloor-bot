@@ -142,7 +142,7 @@ assert len(got) == 1 and "да, работает, спасибо" in got[0], got
 print("--- отвечать от имени владельца может только владелец")
 before = len(sent())
 update({"message": {"message_id": 53, "text": "подделка", "reply_to_message": {**report, "chat": {"id": 2, "type": "private"}}, "from": {"id": 2, "first_name": "Боря"}, "chat": {"id": 2, "type": "private"}}})
-assert [x for x in sent()[before:] if x["chat_id"] in (reporter, 2)] == [], sent()[before:]
+assert [x for x in sent()[before:] if x["chat_id"] == reporter or "подделка" in x["text"]] == [], sent()[before:]
 update({"message": {"message_id": 54, "text": "ответ", "reply_to_message": {**report, "text": f"Проблема от Тень (id {DM_BLOCKED_UID}):"}, **owner}})
 assert [x["text"] for x in sent()[before:] if x["chat_id"] == 1][-1].startswith("Не доставлено"), sent()[before:]
 
@@ -193,6 +193,39 @@ before = len(sent())
 retry = {"message_id": 60, "text": mine[1], "chat": dm["chat"], **bot}
 update({"message": {"message_id": 61, "text": "вот текстом", "reply_to_message": retry, **dm}})
 assert len([x for x in sent()[before:] if x["chat_id"] == 1 and "вот текстом" in x["text"]]) == 1, sent()[before:]
+
+print("--- сообщение в личке не ответом на вопрос: бот объясняет и спрашивает снова")
+loner = FRESH_UID + random.randrange(10 ** 9)
+dm = {"from": {"id": loner, "first_name": "Одиночка"}, "chat": {"id": loner, "type": "private"}}
+txt = {"document": {"file_id": "t", "mime_type": "text/plain", "file_name": "log.txt", "file_size": 120}}
+before = len(sent())
+update({"message": {"message_id": 70, **txt, **dm}})
+update({"message": {"message_id": 71, "write_access_allowed": {"web_app_name": "techfloor"}, **dm}})
+mine = [x["text"] for x in sent()[before:] if x["chat_id"] == loner]
+assert len(mine) == 1 and mine[0].startswith("Это сообщение никуда не ушло") and "Опиши проблему" in mine[0], mine
+assert not [x for x in sent()[before:] if x["chat_id"] == 1 and f"id <code>{loner}</code>" in x["text"]]
+before = len(sent())
+update({"message": {"message_id": 72, "reply_to_message": {"message_id": 73, "text": mine[0], "chat": dm["chat"], **bot}, **txt, **dm}})
+mine = [x["text"] for x in sent()[before:] if x["chat_id"] == loner]
+assert len(mine) == 1 and mine[0].startswith("Такой файл не подходит"), mine
+
+print("--- проблема из приложения: категория уходит владельцу бота, владелец может ответить")
+uid, X = fresh("Приложенец")
+st, d = api(X); assert st == 200 and {"app", "notify", "other"} <= {k["id"] for k in d["problems"]["kinds"]}, d
+before = len(sent())
+st, d = api(X, {"action": "problem", "kind": "app", "text": "белый <экран>"}); assert st == 200, d
+got = [x["text"] for x in sent()[before:] if x["chat_id"] == 1 and f"id <code>{uid}</code>" in x["text"]]
+assert len(got) == 1 and "<b>Приложение не открывается или выдаёт ошибку</b>\n\nбелый &lt;экран&gt;" in got[0], got
+assert not [x for x in sent()[before:] if x["chat_id"] == CH], sent()[before:]
+before = len(sent())
+report = {"message_id": 80, "text": f"Проблема от Приложенец (id {uid}):\n\nПриложение не открывается или выдаёт ошибку\n\nбелый <экран>", "chat": owner["chat"], **bot}
+update({"message": {"message_id": 81, "text": "уже починили", "reply_to_message": report, **owner}})
+mine = [x["text"] for x in sent()[before:] if x["chat_id"] == uid]
+assert len(mine) == 1 and "уже починили" in mine[0], sent()[before:]
+st, d = api(X, {"action": "problem", "kind": "nope", "text": "x"}); assert st == 400, d
+st, d = api(X, {"action": "problem", "kind": "app", "text": "   "}); assert st == 400 and "Опиши" in err(d), d
+for i in range(4): st, d = api(X, {"action": "problem", "kind": "other", "text": f"ещё {i}"}); assert st == 200, d
+st, d = api(X, {"action": "problem", "kind": "other", "text": "шестая"}); assert st == 400 and "попробуй через" in err(d), d
 
 print("--- команды в группе работают только у админов, в том числе анонимных")
 st, d = hook("/board", chat=SPARE_CH, sender={"id": 2, "first_name": "Боря"}); assert st == 200, d

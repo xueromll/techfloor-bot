@@ -64,4 +64,30 @@ for text, want in (("1,5", 90), ("0,5", 30), ("2,5", 150), ("1:05", 65), ("1,05"
 wipe("machines")
 for text in ("1 5", "301", "6,0", "1,60", "0", "полтора"):
     st, d = api(ANYA, {"action": "take", "t": "w", "n": 1, "time": text}); assert "Не понял время" in err(d), (text, d)
+print("--- админ отмечает машину сломанной: занять нельзя, кто ждал её — в начале очереди")
+wipe()
+st, d = api(GALYA); slots = d["slots"]
+st, d = api(GALYA, {"action": "book", "t": "w", "at": slots[-1], "n": 4}); assert st == 200, d
+st, d = api(BORYA, {"action": "take", "t": "w", "n": 4, "time": "60"}); assert st == 200, d
+st, d = api(VOVA, {"action": "next", "t": "w", "n": 4}); assert st == 200, d
+st, d = api(BORYA, {"action": "broken", "t": "w", "n": 4}); assert "только админы" in err(d), d
+before = len(sent())
+st, d = api(ANYA, {"action": "broken", "t": "w", "n": 4, "note": "  не сливает   воду "}); assert st == 200, d
+w4 = m(d, "w", 4); assert w4["status"] == "broken" and w4["note"] == "не сливает воду" and "next" not in w4, w4
+assert [x for x in d["machines"] if x["status"] == "hold" and x["owner"]["id"] == 3], "Вова не получил другую стиралку"
+assert [b["n"] for b in d["bookings"] if b["user"]["id"] == 4] == [None], d["bookings"]
+texts = [x["text"] for x in sent()[before:]]
+assert any("Стиралка 4 сломалась" in t and "забери" in t for t in texts), texts
+assert any("начало очереди" in t for t in texts) and any("любая свободная стиралка" in t for t in texts), texts
+assert "Не работают: стиралка 4." in one("SELECT text FROM boards WHERE chat_id = ?", CH)
+st, d = api(ANYA, {"action": "broken", "t": "w", "n": 4}); assert "уже отмечена" in err(d), d
+for extra in ({"action": "take", "time": "30"}, {"action": "load"}, {"action": "next"}, {"action": "claim"}, {"action": "free"}):
+    st, d = api(BORYA, {**extra, "t": "w", "n": 4}); assert st == 400, (extra, d)
+st, d = api(BORYA, {"action": "book", "t": "w", "at": slots[-1], "n": 4}); assert "недоступна" in err(d), d
+st, d = api(ANYA, {"action": "admin_reset_laundry"}); assert st == 200 and m(d, "w", 4)["status"] == "broken", m(d, "w", 4)
+st, d = api(BORYA, {"action": "fixed", "t": "w", "n": 4}); assert "только админы" in err(d), d
+st, d = api(ANYA, {"action": "fixed", "t": "w", "n": 4}); assert st == 200 and m(d, "w", 4)["status"] == "free", m(d, "w", 4)
+assert "Не работают" not in one("SELECT text FROM boards WHERE chat_id = ?", CH)
+wipe()
+
 print("ALL CF TESTS OK")

@@ -24,7 +24,7 @@ const AUTH_CACHE_SECONDS = 300;
 const AUTH_CACHE_MAX = 200;
 const SWEEP_SECONDS = 600;
 const RECENT_SECONDS = 120;
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const ROOM_USER_BOOKINGS = 3;
 const INIT_DATA_MAX = 4096;
 const API_BODY_MAX = 8 * 1024;
@@ -34,6 +34,8 @@ const BLOCK_CACHE_SECONDS = 60;
 const BLOCK_CACHE_MAX = 500;
 const HITS_MAX = 10000;
 const BLOCK_MAX_DAYS = 365;
+const BROKEN_NOTE_LENGTH = 100;
+const NEVER = 1e12;
 
 const LIMITS = {
   state: { limit: 60, seconds: 60, scaled: true },
@@ -83,10 +85,19 @@ const ROOM_HELP =
 const PROBLEM_ASK = "Опиши проблему одним сообщением";
 const PROBLEM_FILE_MB = 20;
 const PROBLEM_PROMPT = `${PROBLEM_ASK} в ответ на это — можно приложить скриншот (JPG, PNG, WebP), PDF или видео (MP4) до ${PROBLEM_FILE_MB} МБ. Я передам её администратору бота.`;
-const PROBLEM_INPUT = { force_reply: true, input_field_placeholder: "Что случилось?" };
+const DM_CONTENT = ["text", "photo", "document", "video", "animation", "sticker", "voice", "audio", "video_note"];
+const PROBLEM_INPUT ={ force_reply: true, input_field_placeholder: "Что случилось?" };
 const PROBLEM_LENGTH = 3500;
 const PROBLEM_FILES = ["image/jpeg", "image/png", "image/webp", "application/pdf", "video/mp4"];
 const PROBLEM_HEAD = /^Проблема от .+ \(id (\d+)\):/;
+const PROBLEM_KINDS = [
+  { id: "app", name: "Приложение не открывается или выдаёт ошибку", hint: "Какая ошибка и на каком телефоне" },
+  { id: "button", name: "Кнопка не работает или не сохраняется", hint: "Что ты нажал, что ожидал и что получилось" },
+  { id: "notify", name: "Не приходят уведомления", hint: "Какое уведомление ждал и когда" },
+  { id: "bot", name: "Бот в чате ведёт себя неправильно", hint: "Например: закреп не обновляется или бот пишет лишнее" },
+  { id: "idea", name: "Идея для бота или приложения", hint: "Что добавить или сделать удобнее" },
+  { id: "other", name: "Другое", hint: "Что не так с ботом или приложением?" },
+];
 const ANSWER_HEAD = "Ответ администратора бота:";
 const ANSWER_TAIL = "Чтобы написать ещё, ответь на это сообщение.";
 
@@ -117,7 +128,7 @@ const SCHEMA = [
     chat_id INTEGER NOT NULL, mtype TEXT NOT NULL, num INTEGER NOT NULL,
     user_id INTEGER NOT NULL, user_name TEXT NOT NULL, username TEXT,
     started_at REAL NOT NULL, ends_at REAL NOT NULL, kind TEXT NOT NULL DEFAULT 'run', warned INTEGER NOT NULL DEFAULT 0,
-    reporter_id INTEGER, reporter_name TEXT, reporter_username TEXT, finished_at REAL,
+    reporter_id INTEGER, reporter_name TEXT, reporter_username TEXT, finished_at REAL, note TEXT,
     PRIMARY KEY (chat_id, mtype, num))`,
   `CREATE TABLE IF NOT EXISTS boards (chat_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL, text TEXT, thread_id INTEGER)`,
   `CREATE TABLE IF NOT EXISTS queue (
@@ -178,6 +189,7 @@ const MIGRATIONS = [
   "ALTER TABLE room_bookings ADD COLUMN warned INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE room_bookings ADD COLUMN public INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE room_bookings ADD COLUMN capacity INTEGER",
+  "ALTER TABLE machines ADD COLUMN note TEXT",
 ];
 
 const NUMBERS = WALLS.flat();
@@ -189,6 +201,7 @@ const REPLACEABLE = new Set(["hold", "done", "loaded"]);
 const ROOM_ACTIONS = new Set(["room_book", "room_edit", "room_cancel", "room_join", "room_leave", "admin_reset_room", "privacy"]);
 const PLAYROOM_ONLY = new Set(["room_book", "room_edit", "room_cancel", "room_join", "room_leave", "admin_reset_room"]);
 const ANNOUNCING = new Set(["room_book", "room_edit", "room_cancel"]);
+const UNPINNED = new Set(["dm", "problem"]);
 const COMMANDS = ["/start", "/problem", "/board", "/playroom", "/unpin", "/block", "/unblock", "/blocked"];
 
 const memberCache = new Map();
@@ -596,11 +609,11 @@ async function getMachine(env, chatId, mtype, num) {
   return first(env, "SELECT * FROM machines WHERE chat_id = ? AND mtype = ? AND num = ?", chatId, mtype, num);
 }
 
-async function occupy(env, chatId, mtype, num, p, started, ends, kind = "run", reporter = null, replaces = null) {
+async function occupy(env, chatId, mtype, num, p, started, ends, kind = "run", reporter = null, replaces = null, note = null) {
   const insert = env.DB.prepare(
-    "INSERT INTO machines (chat_id, mtype, num, user_id, user_name, username, started_at, ends_at, kind, warned, reporter_id, reporter_name, reporter_username) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)"
-  ).bind(chatId, mtype, num, p.id, p.name, p.username ?? null, started, ends, kind, reporter ? reporter.id : null, reporter ? reporter.name : null, reporter ? reporter.username ?? null : null);
+    "INSERT INTO machines (chat_id, mtype, num, user_id, user_name, username, started_at, ends_at, kind, warned, reporter_id, reporter_name, reporter_username, note) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)"
+  ).bind(chatId, mtype, num, p.id, p.name, p.username ?? null, started, ends, kind, reporter ? reporter.id : null, reporter ? reporter.name : null, reporter ? reporter.username ?? null : null, note);
   try {
     if (replaces === null) await insert.run();
     else {
@@ -898,11 +911,17 @@ async function pinnedText(env, chatId) {
     const free = NUMBERS.filter((n) => !busy.has(key(mtype, n))).length;
     return `${cfg.many} ${free} из ${NUMBERS.length}`;
   });
-  const leftover = [...busy.values()].filter((r) => LEFTOVER.has(r.kind)).length;
+  const leftover = Object.entries(MACHINES)
+    .map(([mtype, cfg]) => [cfg.many, NUMBERS.filter((n) => LEFTOVER.has(busy.get(key(mtype, n))?.kind)).length])
+    .filter(([, n]) => n)
+    .map(([many, n]) => `${many} ${n}`);
+  const broken = Object.keys(MACHINES).flatMap((mtype) =>
+    NUMBERS.filter((n) => busy.get(key(mtype, n))?.kind === "broken").map((n) => mname(mtype, n).toLowerCase()));
   return (
     "<b>Прачечная</b>\n" +
     `Свободно: ${counts.join(", ")}.\n` +
-    (leftover ? `С вещами внутри: ${leftover}.\n` : "") +
+    (leftover.length ? `С вещами внутри: ${leftover.join(", ")}.\n` : "") +
+    (broken.length ? `Не работают: ${broken.join(", ")}.\n` : "") +
     "\nОткрой приложение, чтобы занять машину, встать в очередь, забронировать, " +
     "отметить, что внутри лежат чужие вещи без программы, или что переложил чужие вещи."
   );
@@ -1001,6 +1020,7 @@ async function onUpdate(update, env) {
     if (reporter) return answerProblem(env, msg, Number(reporter[1]), text);
     if (answered.text?.includes(PROBLEM_ASK) || answered.text?.startsWith(ANSWER_HEAD)) return problem(env, msg, text);
   }
+  if (msg.chat?.type === "private" && msg.from && !msg.text?.startsWith("/") && DM_CONTENT.some((k) => msg[k])) return stray(env, msg);
   if (typeof msg.text !== "string" || !msg.text.startsWith("/")) return;
   const [command, target] = msg.text.trim().split(/\s+/)[0].split("@");
   if (target && target.toLowerCase() !== (await username(env)).toLowerCase()) return;
@@ -1063,6 +1083,17 @@ async function problem(env, msg, text) {
   });
   const sent = head.ok && (text || (await tg(env, "copyMessage", { chat_id: owner, from_chat_id: msg.chat.id, message_id: msg.message_id })).ok);
   return answer(sent ? "Спасибо! Передал администратору бота, ответ придёт сюда." : "Не получилось передать — попробуй позже.");
+}
+
+async function stray(env, msg) {
+  console.log(`DM ${msg.from.id} not a reply to the problem prompt: ${DM_CONTENT.filter((k) => msg[k]).join(", ")}, reply_to ${msg.reply_to_message ? "yes" : "no"}`);
+  if (spend(env, "command", msg.from.id)) return;
+  return tg(env, "sendMessage", {
+    chat_id: msg.chat.id,
+    text: `Это сообщение никуда не ушло: администратору бота я передаю только ответы на мой вопрос ниже.\n\n${PROBLEM_PROMPT}`,
+    reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
+    reply_markup: PROBLEM_INPUT,
+  });
 }
 
 function reportable(msg) {
@@ -1529,6 +1560,7 @@ async function state(env, chatId, me, admin, section = "laundry") {
       if (row) {
         const showReporter = row.kind !== "parked" || admin || row.reporter_id === me.id;
         Object.assign(item, { owner: view(person(row)), ends: row.ends_at, reporter: showReporter ? view(person(row, "reporter")) : null, finished: row.finished_at });
+        if (row.kind === "broken") item.note = row.note || "";
       }
       const nxt = nexts.get(k);
       if (nxt) item.next = view(person(nxt));
@@ -1557,6 +1589,7 @@ async function state(env, chatId, me, admin, section = "laundry") {
     ironing: IRONING_BOARD,
     claim: CLAIM_MINUTES,
     clothesHours: CLOTHES_HOURS,
+    noteLength: BROKEN_NOTE_LENGTH,
     maxMinutes: MAX_MINUTES,
     bookingGap: BOOKING_GAP_MINUTES,
     machines,
@@ -1571,6 +1604,7 @@ async function state(env, chatId, me, admin, section = "laundry") {
     section,
     sections: { laundry: boards.has("laundry"), playroom: rooms && boards.has("playroom") },
     room: rooms ? roomState(days, roomRows, joinRows, view, me.id) : null,
+    problems: Number(env.OWNER_ID) ? { kinds: PROBLEM_KINDS, length: PROBLEM_LENGTH } : null,
   };
 }
 
@@ -1733,6 +1767,7 @@ function ownerArg(me, body) {
 }
 
 function occupiedText(mtype, num, kind) {
+  if (kind === "broken") return `${mname(mtype, num)} сломана — выбери другую.`;
   return LEFTOVER.has(kind)
     ? `В ${MACHINES[mtype].prep} ${num} ещё лежат чужие вещи. Их нужно забрать или переложить.`
     : `${mname(mtype, num)} уже занята.`;
@@ -1782,11 +1817,12 @@ const ACTIONS = {
   async claim(env, chatId, me, admin, body, trail) {
     const [mtype, num] = machineArg(body);
     const row = await getMachine(env, chatId, mtype, num);
+    if (row?.kind === "broken") return `${mname(mtype, num)} сломана.`;
     if (!row || row.kind === "hold" || row.user_id) return "У этой машины уже есть хозяин.";
     Object.assign(trail, machineTrail(row), { owner: me });
     const ok = await changed(
       env,
-      "UPDATE machines SET user_id = ?, user_name = ?, username = ? WHERE chat_id = ? AND mtype = ? AND num = ? AND user_id = 0",
+      "UPDATE machines SET user_id = ?, user_name = ?, username = ? WHERE chat_id = ? AND mtype = ? AND num = ? AND user_id = 0 AND kind != 'broken'",
       me.id, me.name, me.username, chatId, mtype, num
     );
     if (!ok) return "У этой машины уже есть хозяин.";
@@ -1800,6 +1836,7 @@ const ACTIONS = {
     const [mtype, num] = machineArg(body);
     const row = await getMachine(env, chatId, mtype, num);
     if (!row) return `${mname(mtype, num)} уже свободна.`;
+    if (row.kind === "broken") return `${mname(mtype, num)} отмечена сломанной — когда её починят, админ снимет отметку.`;
     Object.assign(trail, machineTrail(row));
     const marked = row.kind === "run" && row.reporter_id != null;
     if (!admin && (marked ? row.reporter_id !== me.id : row.user_id !== me.id && row.reporter_id !== me.id)) {
@@ -1851,6 +1888,7 @@ const ACTIONS = {
     const cfg = MACHINES[mtype];
     const row = await getMachine(env, chatId, mtype, num);
     if (!row || row.kind === "hold") return `${mname(mtype, num)} сейчас не занята — можно просто занять её.`;
+    if (row.kind === "broken") return `${mname(mtype, num)} сломана.`;
     if (row.user_id === me.id) return "Это твоя машина.";
     if (await first(env, "SELECT 1 FROM nexts WHERE chat_id = ? AND mtype = ? AND user_id = ?", chatId, mtype, me.id)) {
       return `У тебя уже есть бронь на ${cfg.acc} после программы.`;
@@ -1962,6 +2000,64 @@ const ACTIONS = {
     const res = await tg(env, "sendMessage", { chat_id: me.id, text: playroom(env) ? ROOM_HELP : HELP });
     await setDm(env, me.id, res.ok);
     return res.ok ? null : "Не получилось написать тебе в личку — открой бота и нажми «Старт».";
+  },
+
+  async broken(env, chatId, me, admin, body, trail) {
+    if (!admin) return "Это могут только админы чата.";
+    const [mtype, num] = machineArg(body);
+    const name = mname(mtype, num);
+    const note = String(body.note ?? "").replace(/\s+/g, " ").trim().slice(0, BROKEN_NOTE_LENGTH) || null;
+    const row = await getMachine(env, chatId, mtype, num);
+    if (row?.kind === "broken") return `${name} уже отмечена сломанной.`;
+    Object.assign(trail, row ? machineTrail(row) : { mtype, num });
+    if (!(await occupy(env, chatId, mtype, num, UNKNOWN, now(), NEVER, "broken", me, row ? row.started_at : null, note))) {
+      return `${name} только что изменилась — попробуй ещё раз.`;
+    }
+    const nexts = await all(env, "DELETE FROM nexts WHERE chat_id = ? AND mtype = ? AND num = ? RETURNING *", chatId, mtype, num);
+    const bookings = await all(env, "UPDATE bookings SET num = NULL WHERE chat_id = ? AND mtype = ? AND num = ? RETURNING *", chatId, mtype, num);
+    const waiting = [...(row?.kind === "hold" ? [person(row)] : []), ...nexts.map((r) => person(r))];
+    for (const p of waiting) {
+      await enqueue(env, chatId, mtype, p, 0);
+      if (p.id !== me.id) await notice(env, chatId, p, `${name} сломалась — админ отметил её неисправной. Я поставил тебя в начало очереди на ${MACHINES[mtype].acc}.`);
+    }
+    if (row && row.kind !== "hold" && row.user_id && row.user_id !== me.id) {
+      await notice(env, chatId, person(row), `${name} сломалась — админ отметил её неисправной. Если внутри твои вещи, забери их.`);
+    }
+    for (const b of bookings) {
+      if (b.user_id !== me.id) {
+        await notice(env, chatId, person(b), `${name} сломалась — по твоей брони на ${clock(env, b.at)} достанется любая свободная ${MACHINES[mtype].name.toLowerCase()}.`);
+      }
+    }
+    if (waiting.length) await dispatch(env, chatId, mtype);
+    return null;
+  },
+
+  async fixed(env, chatId, me, admin, body, trail) {
+    if (!admin) return "Это могут только админы чата.";
+    const [mtype, num] = machineArg(body);
+    Object.assign(trail, { mtype, num });
+    if (!(await changed(env, "DELETE FROM machines WHERE chat_id = ? AND mtype = ? AND num = ? AND kind = 'broken'", chatId, mtype, num))) {
+      return `${mname(mtype, num)} не отмечена сломанной.`;
+    }
+    await handoff(env, chatId, mtype, num);
+    return null;
+  },
+
+  async problem(env, chatId, me, admin, body) {
+    const owner = Number(env.OWNER_ID);
+    if (!owner) return "Сейчас некому передать проблему — напиши админу чата.";
+    const kind = PROBLEM_KINDS.find((k) => k.id === body.kind);
+    if (!kind) throw new ApiError("Некорректный запрос.");
+    const text = String(body.text ?? "").trim().slice(0, PROBLEM_LENGTH);
+    if (!text) return "Опиши, что случилось.";
+    const retry = spend(env, "problem", me.id);
+    if (retry) return `Ты уже отправил несколько сообщений — попробуй через ${Math.ceil(retry / 60)} мин.`;
+    const sent = await tg(env, "sendMessage", {
+      chat_id: owner,
+      parse_mode: "HTML",
+      text: `Проблема от ${tag(me)} (id <code>${me.id}</code>):\n\n<b>${kind.name}</b>\n\n${escape(text)}`,
+    });
+    return sent.ok ? null : "Не получилось передать — попробуй позже.";
   },
 
   async privacy(env, chatId, me, admin, body) {
@@ -2077,9 +2173,11 @@ const ACTIONS = {
   async admin_reset_laundry(env, chatId, me, admin, body) {
     if (!admin) return "Это могут только админы чата.";
     await env.DB.batch(
-      ["machines", "queue", "nexts", "bookings", "moved"].map((t) => env.DB.prepare(`DELETE FROM ${t} WHERE chat_id = ?`).bind(chatId))
+      ["machines", "queue", "nexts", "bookings", "moved"].map((t) =>
+        env.DB.prepare(`DELETE FROM ${t} WHERE chat_id = ?${t === "machines" ? " AND kind != 'broken'" : ""}`).bind(chatId))
     );
-    await say(env, chatId, "Админ сбросил статусы прачечной: все машины свободны, очередь и брони очищены.");
+    const broken = await first(env, "SELECT 1 AS ok FROM machines WHERE chat_id = ? AND kind = 'broken'", chatId);
+    await say(env, chatId, `Админ сбросил статусы прачечной: все машины${broken ? ", кроме сломанных," : ""} свободны, очередь и брони очищены.`);
     return null;
   },
 
@@ -2129,7 +2227,7 @@ async function apiAction(request, env) {
   if (announces) spend(env, "room", me.id);
   if (body.action === "privacy") me.hidden = !!body.hidden;
   if (ROOM_ACTIONS.has(body.action)) await updateRoomBoard(env, chatId);
-  else if (body.action !== "dm") await updatePinned(env, chatId);
+  else if (!UNPINNED.has(body.action)) await updatePinned(env, chatId);
   return json(await state(env, chatId, me, admin, section));
 }
 

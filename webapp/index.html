@@ -46,6 +46,8 @@
   .tile.hold { background: rgba(201, 144, 15, 0.16); border-bottom-color: var(--hold); }
   .tile.done { background: rgba(142, 91, 214, 0.15); border-bottom-color: var(--done); }
   .tile.loaded { background: rgba(214, 118, 46, 0.16); border-bottom-color: var(--loaded); }
+  .tile.broken { background: rgba(128, 128, 128, 0.16); border-bottom-color: var(--hint); }
+  .tile.broken b { text-decoration: line-through; color: var(--hint); }
   .tile.booked { outline: 2px dashed var(--hold); outline-offset: -2px; }
   .tile.mine { outline: 2px solid var(--accent); outline-offset: -2px; }
   .legend { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 2px; }
@@ -56,6 +58,7 @@
   .dot.hold { background: var(--hold); }
   .dot.done { background: var(--done); }
   .dot.loaded { background: var(--loaded); }
+  .dot.broken { background: var(--hint); }
   .lines { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 8px; }
   .line { padding: 6px 0; cursor: pointer; }
   .item { border-top: 1px solid var(--line); padding: 10px 0; }
@@ -68,6 +71,9 @@
   .btn:disabled { opacity: 0.5; }
   input { width: 100%; font: inherit; font-size: 20px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); text-align: center; }
   select { width: 100%; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  textarea { display: block; width: 100%; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); resize: vertical; }
+  .kinds { display: flex; flex-direction: column; gap: 6px; }
+  .kinds .chip { text-align: left; padding: 12px; }
   .cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; text-align: center; }
   .cal .wd { font-size: 12px; color: var(--hint); padding: 4px 0; }
   .day { position: relative; border: 0; border-radius: 9px; padding: 9px 0; font: inherit; background: rgba(128, 128, 128, 0.1); color: var(--text); cursor: pointer; }
@@ -168,13 +174,23 @@ function btn(text, onclick, kind) {
 }
 
 async function api(path, body) {
-  const res = await fetch(path, {
-    method: body ? "POST" : "GET",
-    headers: { "Content-Type": "application/json", "X-Init-Data": tg ? tg.initData : "" },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  let res;
   let data = {};
-  try { data = await res.json(); } catch (e) {}
+  try {
+    res = await fetch(path, {
+      method: body ? "POST" : "GET",
+      headers: { "Content-Type": "application/json", "X-Init-Data": tg ? tg.initData : "" },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal,
+    });
+    try { data = await res.json(); } catch (e) { if (ctrl.signal.aborted) throw e; }
+  } catch (e) {
+    throw new Error("Нет связи с сервером — проверь интернет и попробуй ещё раз.");
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok || data.error) throw new Error(data.error || "Сервер не отвечает, попробуй ещё раз.");
   return data;
 }
@@ -188,13 +204,18 @@ function setState(data) {
 async function load() {
   if (loading) return;
   loading = true;
+  const first = !S;
   try {
-    const first = !S;
     setState(await api("/api/state"));
     if (first && S.dm !== 1 && S.bot) allowDm(true);
   }
-  catch (e) { if (!S) app.replaceChildren(el("div", { class: "empty" }, e.message)); }
+  catch (e) { if (first) failed(S ? `Не получилось показать прачечную: ${e.message}` : e.message); }
   finally { loading = false; schedule(); }
+}
+
+function failed(text) {
+  S = null;
+  app.replaceChildren(el("div", { class: "empty" }, el("p", {}, text), btn("Попробовать ещё раз", load, "secondary")));
 }
 
 function schedule() {
@@ -204,13 +225,14 @@ function schedule() {
   poll = setTimeout(load, ticking ? 15000 : 45000);
 }
 
-async function act(body) {
+async function act(body, done) {
   if (busy) return;
   busy = true;
   try {
     setState(await api("/api/action", body));
     closeSheet();
     if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    if (done) warn(done);
   } catch (e) {
     warn(e.message);
   } finally {
@@ -241,6 +263,7 @@ const LEFTOVER = ["done", "parked", "loaded"];
 const ownerOf = (m) => (m.owner.id === 0 ? "хозяин неизвестен" : who(m.owner));
 
 function statusText(m) {
+  if (m.status === "broken") return "сломана" + (m.note ? `: ${m.note}` : "");
   const booked = m.booking ? `, бронь на ${when(m.booking.at)}: ${who(m.booking.user)}` : "";
   if (m.status === "run") return `${ownerOf(m)}, ${left(m.ends)}` + (m.next ? `, следующий: ${who(m.next)}` : "") + booked;
   if (m.status === "hold") return `придержана для ${who(m.owner)} до ${clock(m.ends)}` + booked;
@@ -254,11 +277,15 @@ function statusText(m) {
 
 function tile(m) {
   const freeSub = m.booking ? `бронь ${clock(m.booking.at)}` : "свободна";
-  const subs = { run: m.ends ? leftShort(m.ends) : "", hold: "ждёт", done: "готово", parked: "вещи", loaded: "вещи" };
+  const subs = { run: m.ends ? leftShort(m.ends) : "", hold: "ждёт", done: "готово", parked: "вещи", loaded: "вещи", broken: "сломана" };
   const sub = subs[m.status] ?? freeSub;
-  const mine = isMe(m.owner) || isMe(m.next) || isMe(m.reporter) || (m.booking && isMe(m.booking.user));
+  const mine = m.status !== "broken" && isMine(m);
   return el("button", { class: `tile ${m.status}${m.booking ? " booked" : ""}${mine ? " mine" : ""}`, onclick: () => openMachine(m) },
     el("b", {}, m.n), el("small", {}, sub));
+}
+
+function isMine(m) {
+  return isMe(m.owner) || isMe(m.next) || isMe(m.reporter) || (m.booking && isMe(m.booking.user));
 }
 
 function gridCard() {
@@ -275,7 +302,8 @@ function gridCard() {
       el("span", {}, el("i", { class: "dot run" }), "занята"),
       el("span", {}, el("i", { class: "dot hold" }), "придержана"),
       el("span", {}, el("i", { class: "dot done" }), "готово, вещи внутри"),
-      el("span", {}, el("i", { class: "dot loaded" }), "вещи без программы")),
+      el("span", {}, el("i", { class: "dot loaded" }), "вещи без программы"),
+      S.machines.some((m) => m.t === tab && m.status === "broken") ? el("span", {}, el("i", { class: "dot broken" }), "сломана") : null),
     lines.length ? el("div", { class: "lines" }, lines) : null);
 }
 
@@ -284,6 +312,14 @@ function openMachine(m) {
   const marked = isMe(m.reporter);
   const admin = S.me.admin;
   const leftover = LEFTOVER.includes(m.status);
+  if (m.status === "broken") {
+    openSheet(mname(m), [
+      el("p", {}, cap(statusText(m)) + "."),
+      el("p", { class: "hint" }, `Админ отметил её неисправной${m.reporter ? ` (${who(m.reporter)})` : ""}. Занять или забронировать её нельзя, пока не починят.`),
+      admin ? btn("Починили — снова работает", () => act({ action: "fixed", t: m.t, n: m.n })) : null,
+    ]);
+    return;
+  }
   const body = [el("p", {}, cap(statusText(m)) + (m.status === "run" ? ` (до ${clock(m.ends)})` : "") + ".")];
   if (m.status === "parked") {
     const by = !m.reporter ? "" : marked ? " (переложено тобой)" : ` (кто: ${who(m.reporter)})`;
@@ -365,7 +401,18 @@ function openMachine(m) {
       body.push(btn("Забронировать, когда освободится", () => act({ action: "next", t: m.t, n: m.n })));
     }
   }
+  if (admin) body.push(btn("Отметить сломанной", () => openBroken(m), "danger"));
   openSheet(mname(m), body);
+}
+
+function openBroken(m) {
+  const note = el("input", { type: "text", maxlength: S.noteLength, placeholder: "Например: не сливает воду", style: "font-size:16px;text-align:left" });
+  openSheet(`${mname(m)} сломана`, [
+    el("label", {}, "Что с ней (необязательно)"), note,
+    el("p", { class: "hint", style: "margin:8px 0 0" }, "Её нельзя будет занять или забронировать. Кто ждал именно её, встанет в начало очереди, брони на неё перейдут на любую свободную машину, а хозяину вещей внутри придёт уведомление."),
+    btn("Отметить сломанной", () => act({ action: "broken", t: m.t, n: m.n, note: note.value }), "danger"),
+    btn("← Назад", () => openMachine(m), "secondary"),
+  ]);
 }
 
 function openMove(m) {
@@ -435,7 +482,7 @@ function typeCard() {
 }
 
 function mineCard() {
-  const mine = S.machines.filter((m) => isMe(m.owner) || isMe(m.next) || isMe(m.reporter) || (m.booking && isMe(m.booking.user)));
+  const mine = S.machines.filter((m) => m.status !== "broken" && isMine(m));
   if (!mine.length) return null;
   const line = (m) => {
     if (isMe(m.next)) return `${mname(m)} — забронирована за тобой после программы`;
@@ -458,7 +505,7 @@ function adminCard(kind) {
   return el("section", { class: "card" },
     el("h2", {}, "Для админов"),
     el("p", { class: "hint" }, laundry
-      ? "Все машины станут свободными, очередь, брони и записи о переложенных вещах удалятся."
+      ? "Все машины, кроме сломанных, станут свободными, очередь, брони и записи о переложенных вещах удалятся."
       : "Все текущие и будущие брони игровой будут отменены."),
     btn(laundry ? "Сбросить всё в прачечной" : "Отменить все брони игровой", () => confirmAct(
       laundry ? "Точно сбросить все статусы прачечной?" : "Точно отменить все брони игровой?",
@@ -474,6 +521,39 @@ function privacyCard() {
       S.me.hidden
         ? "Включено: везде вместо твоего имени — «Аноним» (у тебя видно «Аноним (это ты)»). Админы чата видят имя."
         : "Другие увидят «Аноним» вместо твоего имени."));
+}
+
+function problemCard() {
+  if (!S.problems) return null;
+  return el("section", { class: "card" },
+    el("h2", {}, "Что-то не так?"),
+    el("p", { class: "hint" }, "Приложение или бот работают неправильно, не приходят уведомления или есть идея — расскажи, и я передам администратору бота."),
+    btn("Сообщить о проблеме", openProblem, "secondary"));
+}
+
+function openProblem() {
+  openSheet("Что случилось?", [
+    el("p", { class: "hint" }, "Выбери, к чему это относится."),
+    el("div", { class: "kinds" }, S.problems.kinds.map((k) => el("button", { class: "chip", onclick: () => openProblemForm(k) }, k.name))),
+  ]);
+}
+
+function openProblemForm(kind) {
+  const text = el("textarea", { rows: 5, maxlength: S.problems.length, placeholder: kind.hint });
+  const send = () => {
+    const why = text.value.trim();
+    if (!why) { warn("Опиши, что случилось."); return; }
+    act({ action: "problem", kind: kind.id, text: why },
+      "Спасибо! Передал администратору бота." + (S.dm === 1 ? " Ответ придёт в личку." : " Чтобы получить ответ, разреши боту писать тебе."));
+  };
+  openSheet(kind.name, [
+    el("label", {}, "Опиши, что случилось"),
+    text,
+    S.dm !== 1 ? el("p", { class: "hint", style: "margin:6px 0 0" }, "Ответ придёт в личку от бота — для этого разреши ему писать тебе.") : null,
+    btn("Отправить", send),
+    btn("← Другая категория", openProblem, "secondary"),
+  ]);
+  text.focus();
 }
 
 function movedCard() {
@@ -753,6 +833,7 @@ function render() {
     dmCard(),
     ...(S.room && section === "playroom" ? roomView() : laundryView()),
     privacyCard(),
+    problemCard(),
   ].filter(Boolean));
 }
 
