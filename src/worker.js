@@ -44,6 +44,7 @@ const LIMITS = {
   nudge: { limit: 5, seconds: 3600 },
   command: { limit: 5, seconds: 60 },
   tap: { limit: 20, seconds: 60 },
+  problem: { limit: 5, seconds: 3600 },
 };
 
 const WALLS = [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11]];
@@ -59,6 +60,15 @@ const NOT_FROM_TELEGRAM = "Открой приложение через Telegram
 
 const HELP =
   "Привет! Я бот техэтажа общаги.\n\n" +
+  "Прачечная — стиралки и сушилки: что свободно, кто занял и сколько осталось, очередь, бронь, " +
+  "напоминания и отметки «внутри чужие вещи, программа не запущена» и «переложил чужие вещи».\n\n" +
+  "Как пользоваться: в чате общаги открой тему про стирку и нажми кнопку «Открыть прачечную» " +
+  "в закреплённом сообщении.\n\n" +
+  "Уведомления: напоминания про стирку приходят сюда, в личку. Теперь я могу тебе писать.\n\n" +
+  "Что-то не работает? Отправь /problem и опиши проблему.";
+
+const ROOM_HELP =
+  "Привет! Я бот техэтажа общаги.\n\n" +
   "• Прачечная — стиралки и сушилки: что свободно, кто занял и сколько осталось, очередь, бронь, " +
   "напоминания и отметки «внутри чужие вещи, программа не запущена» и «переложил чужие вещи».\n" +
   "• Игровая — календарь: свободна ли она сейчас, брони на любой день и бронь своего времени. " +
@@ -67,18 +77,35 @@ const HELP =
   "в закреплённом сообщении — «Открыть прачечную» или «Открыть игровую».\n\n" +
   "Уведомления: напоминания про стирку и про брони игровой приходят сюда, в личку — " +
   "вечером накануне я спрошу, нужна ли бронь на завтра, и напомню за полчаса до начала. " +
-  "Теперь, после /start, я могу тебе писать.\n\n" +
-  "Для админов чата: сделайте бота админом (закреплять и удалять сообщения) и отправьте " +
-  "/board в теме про стирку и /playroom в теме про игровую, убрать бота из темы — /unpin (из всего чата — /unpin all). Нарушителю можно закрыть доступ к приложению: " +
-  "ответьте на его сообщение командой /block (можно со сроком: /block 3d), вернуть — /unblock, список — /blocked.";
+  "Теперь я могу тебе писать.\n\n" +
+  "Что-то не работает? Отправь /problem и опиши проблему.";
+
+const PROBLEM_ASK = "Опиши проблему одним сообщением";
+const PROBLEM_FILE_MB = 20;
+const PROBLEM_PROMPT = `${PROBLEM_ASK} в ответ на это — можно приложить скриншот (JPG, PNG, WebP), PDF или видео (MP4) до ${PROBLEM_FILE_MB} МБ. Я передам её администратору бота.`;
+const PROBLEM_INPUT = { force_reply: true, input_field_placeholder: "Что случилось?" };
+const PROBLEM_LENGTH = 3500;
+const PROBLEM_FILES = ["image/jpeg", "image/png", "image/webp", "application/pdf", "video/mp4"];
+const PROBLEM_HEAD = /^Проблема от .+ \(id (\d+)\):/;
+const ANSWER_HEAD = "Ответ администратора бота:";
+const ANSWER_TAIL = "Чтобы написать ещё, ответь на это сообщение.";
 
 const DESCRIPTION =
+  "Бот прачечной техэтажа общаги.\n\n" +
+  "Стиралки и сушилки: кто занял и сколько осталось, вещи без программы, очередь, бронь и напоминания.\n\n" +
+  "Открывай приложение кнопкой из закреплённого сообщения в чате общаги.";
+
+const ROOM_DESCRIPTION =
   "Бот техэтажа общаги.\n\n" +
   "Прачечная: стиралки и сушилки, кто занял и сколько осталось, вещи без программы, очередь, бронь и напоминания.\n" +
   "Игровая: календарь броней — посмотреть, свободна ли, забронировать время, устроить открытое событие или записаться на чужое.\n\n" +
   "Открывай приложение кнопкой из закреплённых сообщений в чате общаги.";
 
-const SHORT_DESCRIPTION = "Прачечная и игровая техэтажа: кто занял, очередь, брони и напоминания.";
+const SHORT_DESCRIPTION = "Прачечная техэтажа: кто занял стиралку или сушилку, очередь, брони и напоминания.";
+
+const ROOM_SHORT_DESCRIPTION = "Прачечная и игровая техэтажа: кто занял, очередь, брони и напоминания.";
+
+const FOREIGN_CHAT = "Этот бот работает только в чате общаги техэтажа.";
 
 const PIN_HELP =
   "Не получилось закрепить сообщение.\n" +
@@ -160,8 +187,9 @@ const UNKNOWN = { id: 0, name: "неизвестно", username: null };
 const LEFTOVER = new Set(["done", "parked", "loaded"]);
 const REPLACEABLE = new Set(["hold", "done", "loaded"]);
 const ROOM_ACTIONS = new Set(["room_book", "room_edit", "room_cancel", "room_join", "room_leave", "admin_reset_room", "privacy"]);
+const PLAYROOM_ONLY = new Set(["room_book", "room_edit", "room_cancel", "room_join", "room_leave", "admin_reset_room"]);
 const ANNOUNCING = new Set(["room_book", "room_edit", "room_cancel"]);
-const COMMANDS = ["/start", "/board", "/playroom", "/unpin", "/block", "/unblock", "/blocked"];
+const COMMANDS = ["/start", "/problem", "/board", "/playroom", "/unpin", "/block", "/unblock", "/blocked"];
 
 const memberCache = new Map();
 const authCache = new Map();
@@ -334,6 +362,12 @@ async function cronRun(env) {
 }
 
 const now = () => Date.now() / 1000;
+const playroom = (env) => env.PLAYROOM === "on";
+const allowedChats = (env) => String(env.ALLOWED_CHATS || "").split(/[\s,]+/).filter(Boolean);
+const allowed = (env, chatId) => {
+  const list = allowedChats(env);
+  return !list.length || list.includes(String(chatId));
+};
 const formatters = new Map();
 
 function fmt(env, locale, options) {
@@ -789,6 +823,7 @@ async function tick(env, chatId = null) {
       env.DB.prepare("DELETE FROM events WHERE at < ?").bind(t - LOG_DAYS * 86400),
     ]);
   }
+  if (!playroom(env)) return;
   await remindRoomBookings(env, t);
   await sweepRoomBoards(env, t);
 }
@@ -925,6 +960,7 @@ async function updatePinned(env, chatId, recreate = false, thread = undefined) {
 }
 
 async function updateRoomBoard(env, chatId, recreate = false, thread = undefined) {
+  if (!playroom(env)) return;
   const markup = { inline_keyboard: [[{ text: "Открыть игровую", url: await appLink(env, chatId, "p") }]] };
   await placeBoard(env, "pboards", chatId, await roomText(env, chatId), markup, recreate, thread);
 }
@@ -948,23 +984,42 @@ async function onWebhook(request, env, ip) {
 
 async function onUpdate(update, env) {
   if (update.callback_query) return onCallback(env, update.callback_query);
+  if (update.my_chat_member) return onJoin(env, update.my_chat_member);
   const msg = update.message;
   if (!msg) return;
+  if (msg.chat && msg.chat.type !== "private" && !allowed(env, msg.chat.id)) return leave(env, msg.chat, msg.from);
   if (msg.migrate_to_chat_id) {
     await env.DB.batch(TABLES.map((t) => env.DB.prepare(`UPDATE ${t} SET chat_id = ? WHERE chat_id = ?`).bind(msg.migrate_to_chat_id, msg.chat.id)));
     await updatePinned(env, msg.migrate_to_chat_id, true);
     await updateRoomBoard(env, msg.migrate_to_chat_id, true);
     return;
   }
+  const answered = msg.reply_to_message;
+  if (msg.chat?.type === "private" && msg.from && answered?.from?.is_bot && !msg.text?.startsWith("/")) {
+    const text = typeof msg.text === "string" ? msg.text : null;
+    const reporter = msg.from.id === Number(env.OWNER_ID) && PROBLEM_HEAD.exec(answered.text || "");
+    if (reporter) return answerProblem(env, msg, Number(reporter[1]), text);
+    if (answered.text?.includes(PROBLEM_ASK) || answered.text?.startsWith(ANSWER_HEAD)) return problem(env, msg, text);
+  }
   if (typeof msg.text !== "string" || !msg.text.startsWith("/")) return;
   const [command, target] = msg.text.trim().split(/\s+/)[0].split("@");
   if (target && target.toLowerCase() !== (await username(env)).toLowerCase()) return;
-  if (!COMMANDS.includes(command)) return;
+  if (!COMMANDS.includes(command) || (command === "/playroom" && !playroom(env))) return;
   const chat = msg.chat;
   if (chat.type === "private") {
     if (!msg.from || spend(env, "command", msg.from.id)) return;
     await setDm(env, msg.from.id, true);
-    await tg(env, "sendMessage", { chat_id: chat.id, text: command === "/start" ? HELP : `Отправь ${command} в групповом чате.` });
+    if (command === "/problem") {
+      const text = msg.text.trim().replace(/^\S+\s*/, "");
+      if (text) return problem(env, msg, text);
+      await tg(env, "sendMessage", {
+        chat_id: chat.id,
+        text: PROBLEM_PROMPT,
+        reply_markup: PROBLEM_INPUT,
+      });
+      return;
+    }
+    await tg(env, "sendMessage", { chat_id: chat.id, text: command === "/start" ? (playroom(env) ? ROOM_HELP : HELP) : `Отправь ${command} в групповом чате.` });
     return;
   }
   if (chat.type !== "group" && chat.type !== "supergroup") return;
@@ -979,7 +1034,75 @@ async function onUpdate(update, env) {
   if (command === "/playroom") await updateRoomBoard(env, chat.id, true, thread);
   else if (command === "/board" || command === "/start") await updatePinned(env, chat.id, command === "/board", thread);
   else if (command === "/unpin") await unpin(env, msg, thread);
-  else await moderate(env, msg, command, thread, anonymousAdmin ? null : msg.from);
+  else if (command !== "/problem") await moderate(env, msg, command, thread, anonymousAdmin ? null : msg.from);
+}
+
+async function problem(env, msg, text) {
+  const from = msg.from;
+  const owner = Number(env.OWNER_ID);
+  const answer = (reply) => tg(env, "sendMessage", { chat_id: msg.chat.id, text: reply });
+  const retake = (reason) => !spend(env, "command", from.id) && tg(env, "sendMessage", {
+    chat_id: msg.chat.id,
+    text: `${reason}\n\n${PROBLEM_PROMPT}`,
+    reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
+    reply_markup: PROBLEM_INPUT,
+  });
+  if (!owner) return answer("Сейчас некому передать проблему — напиши админу чата.");
+  if (!reportable(msg)) return retake("Такой файл не подходит: можно текст, картинку JPG, PNG или WebP, PDF или видео MP4.");
+  const size = fileSize(msg);
+  if (size > PROBLEM_FILE_MB * 1024 * 1024) {
+    return retake(`Файл слишком большой: ${Math.ceil(size / 1024 / 1024)} МБ, а можно до ${PROBLEM_FILE_MB} МБ. Сожми его или пришли скриншот.`);
+  }
+  const retry = spend(env, "problem", from.id);
+  if (retry) return answer(`Ты уже отправил несколько сообщений — попробуй через ${Math.ceil(retry / 60)} мин.`);
+  const who = tag({ id: from.id, name: from.first_name, username: from.username });
+  const head = await tg(env, "sendMessage", {
+    chat_id: owner,
+    parse_mode: "HTML",
+    text: `Проблема от ${who} (id <code>${from.id}</code>)` + (text ? `:\n\n${escape(text.slice(0, PROBLEM_LENGTH))}` : ":"),
+  });
+  const sent = head.ok && (text || (await tg(env, "copyMessage", { chat_id: owner, from_chat_id: msg.chat.id, message_id: msg.message_id })).ok);
+  return answer(sent ? "Спасибо! Передал администратору бота, ответ придёт сюда." : "Не получилось передать — попробуй позже.");
+}
+
+function reportable(msg) {
+  if (typeof msg.text === "string" || msg.photo) return true;
+  if (msg.animation) return false;
+  const file = msg.video || msg.document;
+  return !!file && PROBLEM_FILES.includes(file.mime_type);
+}
+
+function fileSize(msg) {
+  const file = msg.photo ? msg.photo[msg.photo.length - 1] : msg.video || msg.document;
+  return file?.file_size || 0;
+}
+
+async function answerProblem(env, msg, userId, text) {
+  const head = await tg(env, "sendMessage", {
+    chat_id: userId,
+    text: `${ANSWER_HEAD}\n\n${text ? text.slice(0, PROBLEM_LENGTH) + "\n\n" : ""}${ANSWER_TAIL}`,
+  });
+  const sent = head.ok && (text || (await tg(env, "copyMessage", { chat_id: userId, from_chat_id: msg.chat.id, message_id: msg.message_id })).ok);
+  if (head.error_code === 403 || /chat not found/i.test(head.description || "")) await setDm(env, userId, false);
+  return tg(env, "sendMessage", {
+    chat_id: msg.chat.id,
+    text: sent ? "Отправлено." : "Не доставлено — человек заблокировал бота или не начинал с ним чат.",
+    reply_parameters: { message_id: msg.message_id },
+  });
+}
+
+async function onJoin(env, change) {
+  const chat = change.chat;
+  const status = change.new_chat_member && change.new_chat_member.status;
+  if (!chat || chat.type === "private" || allowed(env, chat.id) || status === "left" || status === "kicked") return;
+  await leave(env, chat, change.from, true);
+}
+
+async function leave(env, chat, from, greet = false) {
+  const actor = from ? { id: from.id, name: [from.first_name, from.last_name].filter(Boolean).join(" "), username: from.username } : null;
+  await audit(env, chat.id, "foreign", actor, { details: { title: chat.title ?? null, type: chat.type } });
+  if (greet && chat.type !== "channel") await tg(env, "sendMessage", { chat_id: chat.id, text: FOREIGN_CHAT });
+  await tg(env, "leaveChat", { chat_id: chat.id });
 }
 
 async function unpin(env, msg, thread) {
@@ -994,8 +1117,9 @@ async function unpin(env, msg, thread) {
     await tg(env, "deleteMessage", { chat_id: chatId, message_id: board.message_id });
     removed.push(name);
   }
+  const back = playroom(env) ? "/board или /playroom" : "/board";
   const text = removed.length
-    ? `Открепил ${removed.join(" и ")}${everywhere ? "" : " в этой теме"}. Вернуть — /board или /playroom в нужной теме.`
+    ? `Открепил ${removed.join(" и ")}${everywhere ? "" : " в этой теме"}. Вернуть — ${back} в нужной теме.`
     : everywhere
       ? "В этом чате нет закреплённых сообщений бота."
       : "В этой теме нет закреплённых сообщений бота. Убрать их из всего чата — /unpin all.";
@@ -1077,7 +1201,7 @@ async function moderate(env, msg, command, thread, by) {
     env.DB.prepare("DELETE FROM room_joins WHERE chat_id = ? AND user_id = ?").bind(chatId, target.id),
   ]);
   cacheSet(blockCache, `${chatId}:${target.id}`, { until, reason: "admin" }, BLOCK_CACHE_MAX);
-  const rooms = out[4].meta.changes;
+  const rooms = playroom(env) ? out[4].meta.changes : 0;
   await answer(
     `${quiet(target)} больше не может пользоваться приложением ${until ? "до " + moment(env, until) : "— пока админ не вернёт доступ (/unblock)"}. ` +
       "Очередь и брони прачечной сняты" + (rooms ? `, будущих броней ${ROOM_GEN} отменено: ${rooms}.` : ".")
@@ -1094,7 +1218,7 @@ async function onCallback(env, cq) {
     cq.message
       ? tg(env, "editMessageText", { chat_id: cq.message.chat.id, message_id: cq.message.message_id, text, parse_mode: "HTML" })
       : null;
-  if (!parsed) {
+  if (!parsed || !playroom(env)) {
     await answer();
     return;
   }
@@ -1146,6 +1270,20 @@ async function cronStatus(env) {
   return lines.join("\n");
 }
 
+async function leaveForeign(env) {
+  const rows = await all(env, "SELECT 'boards' AS t, chat_id, message_id FROM boards UNION ALL SELECT 'pboards', chat_id, message_id FROM pboards");
+  const chats = [...new Set(rows.map((r) => r.chat_id))];
+  if (!allowedChats(env).length) return chats;
+  const foreign = chats.filter((id) => !allowed(env, id));
+  for (const r of rows.filter((r) => foreign.includes(r.chat_id))) {
+    await tg(env, "unpinChatMessage", { chat_id: r.chat_id, message_id: r.message_id });
+    await tg(env, "deleteMessage", { chat_id: r.chat_id, message_id: r.message_id });
+    await env.DB.prepare(`DELETE FROM ${r.t} WHERE chat_id = ?`).bind(r.chat_id).run();
+  }
+  for (const id of foreign) await leave(env, { id, type: "supergroup" }, null);
+  return foreign;
+}
+
 async function onSetup(url, env, ip) {
   const retry = full(env, "fail", ip);
   if (retry) return json({ error: "Too many failed attempts" }, 429, { "Retry-After": String(retry) });
@@ -1157,17 +1295,19 @@ async function onSetup(url, env, ip) {
   const hook = await tg(env, "setWebhook", {
     url: `${url.origin}/telegram`,
     secret_token: env.WEBHOOK_SECRET,
-    allowed_updates: ["message", "callback_query"],
+    allowed_updates: ["message", "callback_query", "my_chat_member"],
   });
   const name = await username(env);
+  const left = await leaveForeign(env);
+  const rooms = playroom(env);
   const profile = [
-    await tg(env, "setMyDescription", { description: DESCRIPTION }),
-    await tg(env, "setMyShortDescription", { short_description: SHORT_DESCRIPTION }),
-    await tg(env, "setMyCommands", { commands: [{ command: "start", description: "Что умеет бот" }], scope: { type: "all_private_chats" } }),
+    await tg(env, "setMyDescription", { description: rooms ? ROOM_DESCRIPTION : DESCRIPTION }),
+    await tg(env, "setMyShortDescription", { short_description: rooms ? ROOM_SHORT_DESCRIPTION : SHORT_DESCRIPTION }),
+    await tg(env, "setMyCommands", { commands: [{ command: "start", description: "Что умеет бот" }, { command: "problem", description: "Сообщить о проблеме" }], scope: { type: "all_private_chats" } }),
     await tg(env, "setMyCommands", {
       commands: [
         { command: "board", description: "Закрепить прачечную в этой теме" },
-        { command: "playroom", description: "Закрепить игровую в этой теме" },
+        ...(rooms ? [{ command: "playroom", description: "Закрепить игровую в этой теме" }] : []),
         { command: "unpin", description: "Открепить бота в этой теме (/unpin all — во всём чате)" },
         { command: "block", description: "Закрыть доступ к приложению (ответом на сообщение)" },
         { command: "unblock", description: "Вернуть доступ к приложению" },
@@ -1182,6 +1322,9 @@ async function onSetup(url, env, ip) {
     `Вебхук: ${hook.ok ? "подключён" : "ошибка — " + hook.description}`,
     `Описание и команды бота: ${failed.length ? "ошибка — " + failed.join("; ") : "обновлены"}`,
     "База данных: готова",
+    allowedChats(env).length
+      ? `Разрешённые чаты: ${allowedChats(env).join(", ")}` + (left.length ? `. Вышел из чужих чатов: ${left.join(", ")}` : "")
+      : `Разрешённые чаты: не заданы — бота можно добавить в любой чат. Задай ALLOWED_CHATS. Чаты с закрепом сейчас: ${left.join(", ") || "нет"}`,
     await cronStatus(env),
     `Адрес Mini App для BotFather: ${url.origin}/`,
   ];
@@ -1280,7 +1423,9 @@ async function authorize(request, env, bucket) {
   const start = startParam.match(/^(-?\d{1,15})(?:_([a-z]))?$/);
   if (!start) throw new ApiError("Открой приложение кнопкой из закреплённого сообщения в чате.", 400);
   const chatId = Number(start[1]);
-  const section = start[2] === "p" ? "playroom" : "laundry";
+  if (!allowed(env, chatId)) throw new ApiError(FOREIGN_CHAT, 403);
+  const rooms = playroom(env);
+  const section = rooms && start[2] === "p" ? "playroom" : "laundry";
   const cached = activeBlock(chatId, user.id);
   if (cached) throw new ApiError(blockedText(env, cached), 403);
   const retry = spend(env, bucket, user.id);
@@ -1292,11 +1437,13 @@ async function authorize(request, env, bucket) {
   await ensureSchema(env);
   const [configured, mine, blocked] = await batch(
     env,
-    q(env, "SELECT 1 AS ok FROM boards WHERE chat_id = ? UNION SELECT 1 FROM pboards WHERE chat_id = ?", chatId, chatId),
+    rooms
+      ? q(env, "SELECT 1 AS ok FROM boards WHERE chat_id = ? UNION SELECT 1 FROM pboards WHERE chat_id = ?", chatId, chatId)
+      : q(env, "SELECT 1 AS ok FROM boards WHERE chat_id = ?", chatId),
     q(env, "SELECT * FROM people WHERE chat_id = ? AND user_id = ?", chatId, user.id),
     q(env, "SELECT until, reason FROM blocks WHERE chat_id = ? AND user_id = ? AND (until IS NULL OR until > ?)", chatId, user.id, now())
   );
-  if (!configured.length) throw new ApiError("В этом чате бот не настроен. Админу нужно отправить /board или /playroom.", 404);
+  if (!configured.length) throw new ApiError(`В этом чате бот не настроен. Админу нужно отправить ${rooms ? "/board или /playroom" : "/board"}.`, 404);
   if (blocked.length) {
     cacheSet(blockCache, `${chatId}:${user.id}`, blocked[0], BLOCK_CACHE_MAX);
     throw new ApiError(blockedText(env, blocked[0]), 403);
@@ -1333,8 +1480,9 @@ function roomState(days, rows, joins, view, meId) {
 
 async function state(env, chatId, me, admin, section = "laundry") {
   const t = now();
-  const days = roomDays(env);
-  const [peopleRows, machineRows, nextRows, bookingRows, queueRows, movedRows, dmRows, boardRows, roomRows, joinRows] = await batch(
+  const rooms = playroom(env);
+  const days = rooms ? roomDays(env) : [];
+  const [peopleRows, machineRows, nextRows, bookingRows, queueRows, movedRows, dmRows, boardRows, roomRows = [], joinRows = []] = await batch(
     env,
     q(env, "SELECT * FROM people WHERE chat_id = ?", chatId),
     q(env, "SELECT * FROM machines WHERE chat_id = ?", chatId),
@@ -1344,13 +1492,17 @@ async function state(env, chatId, me, admin, section = "laundry") {
     q(env, "SELECT * FROM moved WHERE chat_id = ? AND at >= ? ORDER BY at DESC", chatId, t - CLOTHES_HOURS * 3600),
     q(env, "SELECT ok FROM dm WHERE user_id = ?", me.id),
     q(env, "SELECT 'laundry' AS s FROM boards WHERE chat_id = ? UNION ALL SELECT 'playroom' FROM pboards WHERE chat_id = ?", chatId, chatId),
-    q(env,
-      "SELECT * FROM room_bookings WHERE chat_id = ? AND ends > ? AND starts < ? ORDER BY starts",
-      chatId, days[0].start, days[days.length - 1].end),
-    q(env,
-      "SELECT j.* FROM room_joins j JOIN room_bookings r ON r.id = j.booking_id " +
-        "WHERE r.chat_id = ? AND r.ends > ? AND r.starts < ? ORDER BY j.created_at",
-      chatId, days[0].start, days[days.length - 1].end)
+    ...(rooms
+      ? [
+          q(env,
+            "SELECT * FROM room_bookings WHERE chat_id = ? AND ends > ? AND starts < ? ORDER BY starts",
+            chatId, days[0].start, days[days.length - 1].end),
+          q(env,
+            "SELECT j.* FROM room_joins j JOIN room_bookings r ON r.id = j.booking_id " +
+              "WHERE r.chat_id = ? AND r.ends > ? AND r.starts < ? ORDER BY j.created_at",
+            chatId, days[0].start, days[days.length - 1].end),
+        ]
+      : [])
   );
   const hidden = new Set(peopleRows.filter((r) => r.hidden).map((r) => r.user_id));
   const view = (p) => {
@@ -1417,8 +1569,8 @@ async function state(env, chatId, me, admin, section = "laundry") {
     tomorrow: localMidnight(env, 1),
     tz: env.TZ_NAME || "Asia/Yekaterinburg",
     section,
-    sections: { laundry: boards.has("laundry"), playroom: boards.has("playroom") },
-    room: roomState(days, roomRows, joinRows, view, me.id),
+    sections: { laundry: boards.has("laundry"), playroom: rooms && boards.has("playroom") },
+    room: rooms ? roomState(days, roomRows, joinRows, view, me.id) : null,
   };
 }
 
@@ -1600,7 +1752,7 @@ const ACTIONS = {
     if (minutes === null) return `Не понял время. Введи минуты (45), часы с минутами (1:05) или полтора часа как 1,5 — от 1 до ${MAX_MINUTES} минут.`;
     const { owner, reporter } = ownerArg(me, body);
     const row = await getMachine(env, chatId, mtype, num);
-    if (row && !(REPLACEABLE.has(row.kind) && (row.user_id === owner.id || row.reporter_id === me.id))) {
+    if (row && !(REPLACEABLE.has(row.kind) && ((owner.id && row.user_id === owner.id) || row.reporter_id === me.id))) {
       return occupiedText(mtype, num, row.kind);
     }
     const t = now();
@@ -1637,7 +1789,11 @@ const ACTIONS = {
       "UPDATE machines SET user_id = ?, user_name = ?, username = ? WHERE chat_id = ? AND mtype = ? AND num = ? AND user_id = 0",
       me.id, me.name, me.username, chatId, mtype, num
     );
-    return ok ? null : "У этой машины уже есть хозяин.";
+    if (!ok) return "У этой машины уже есть хозяин.";
+    if (row.reporter_id && row.reporter_id !== me.id) {
+      await nudge(env, chatId, me, person(row, "reporter"), `в ${MACHINES[mtype].prep} ${num}, которую ты отметил, нашёлся хозяин вещей. Кто: ${await label(env, chatId, me)}.`);
+    }
+    return null;
   },
 
   async free(env, chatId, me, admin, body, trail) {
@@ -1645,16 +1801,21 @@ const ACTIONS = {
     const row = await getMachine(env, chatId, mtype, num);
     if (!row) return `${mname(mtype, num)} уже свободна.`;
     Object.assign(trail, machineTrail(row));
-    if (row.user_id !== me.id && row.reporter_id !== me.id && !admin) {
-      return "Освободить может хозяин вещей, тот, кто отметил машину, или админ чата.";
+    const marked = row.kind === "run" && row.reporter_id != null;
+    if (!admin && (marked ? row.reporter_id !== me.id : row.user_id !== me.id && row.reporter_id !== me.id)) {
+      return marked
+        ? "Пока программа идёт, освободить может только тот, кто отметил машину, или админ чата."
+        : "Освободить может хозяин вещей, тот, кто отметил машину, или админ чата.";
     }
     if (!(await changed(env, "DELETE FROM machines WHERE chat_id = ? AND mtype = ? AND num = ? AND started_at = ?", chatId, mtype, num, row.started_at))) {
       return `${mname(mtype, num)} уже свободна.`;
     }
     if (row.kind === "parked") {
       await env.DB.prepare("DELETE FROM moved WHERE chat_id = ? AND to_mtype = ? AND to_num = ? AND owner_id = ?").bind(chatId, mtype, num, row.user_id).run();
-    } else if (row.user_id && row.user_id !== me.id) {
-      await nudge(env, chatId, me, person(row), `${MACHINES[mtype].acc} ${num} освободили. Кто: ${await label(env, chatId, me)}.`);
+    } else {
+      const text = `${MACHINES[mtype].acc} ${num} освободили. Кто: ${await label(env, chatId, me)}.`;
+      if (row.user_id && row.user_id !== me.id) await nudge(env, chatId, me, person(row), text);
+      if (row.reporter_id && row.reporter_id !== me.id && row.reporter_id !== row.user_id) await nudge(env, chatId, me, person(row, "reporter"), text);
     }
     await handoff(env, chatId, mtype, num);
     return null;
@@ -1795,6 +1956,12 @@ const ACTIONS = {
       if (freed) await handoff(env, chatId, item.to_mtype, item.to_num);
     }
     return null;
+  },
+
+  async dm(env, chatId, me) {
+    const res = await tg(env, "sendMessage", { chat_id: me.id, text: playroom(env) ? ROOM_HELP : HELP });
+    await setDm(env, me.id, res.ok);
+    return res.ok ? null : "Не получилось написать тебе в личку — открой бота и нажми «Старт».";
   },
 
   async privacy(env, chatId, me, admin, body) {
@@ -1946,7 +2113,7 @@ async function apiAction(request, env) {
   const { chatId, me, admin, section } = await authorize(request, env, "action");
   const body = await readObject(request, API_BODY_MAX);
   const action = typeof body.action === "string" && Object.hasOwn(ACTIONS, body.action) ? ACTIONS[body.action] : null;
-  if (!action) throw new ApiError("Некорректный запрос.");
+  if (!action || (PLAYROOM_ONLY.has(body.action) && !playroom(env))) throw new ApiError("Некорректный запрос.");
   const announces = ANNOUNCING.has(body.action) && !admin;
   if (announces) {
     const retry = full(env, "room", me.id);
@@ -1962,7 +2129,7 @@ async function apiAction(request, env) {
   if (announces) spend(env, "room", me.id);
   if (body.action === "privacy") me.hidden = !!body.hidden;
   if (ROOM_ACTIONS.has(body.action)) await updateRoomBoard(env, chatId);
-  else await updatePinned(env, chatId);
+  else if (body.action !== "dm") await updatePinned(env, chatId);
   return json(await state(env, chatId, me, admin, section));
 }
 

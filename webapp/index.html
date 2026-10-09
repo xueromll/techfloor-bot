@@ -188,7 +188,11 @@ function setState(data) {
 async function load() {
   if (loading) return;
   loading = true;
-  try { setState(await api("/api/state")); }
+  try {
+    const first = !S;
+    setState(await api("/api/state"));
+    if (first && S.dm !== 1 && S.bot) allowDm(true);
+  }
   catch (e) { if (!S) app.replaceChildren(el("div", { class: "empty" }, e.message)); }
   finally { loading = false; schedule(); }
 }
@@ -289,7 +293,10 @@ function openMachine(m) {
     const by = !m.reporter ? "" : marked ? " (отметил ты)" : ` (отметил: ${who(m.reporter)})`;
     body.push(el("p", { class: "hint" }, `Внутри лежат вещи, программа не запущена${by}. Таймер не идёт — машина занята, пока вещи не заберут. Отметка снимется сама через ${S.clothesHours} ч.`));
   }
-  else if (m.reporter) body.push(el("p", { class: "hint" }, `Отмечено за другого человека: ${who(m.reporter)}.`));
+  else if (m.reporter) {
+    const by = marked ? "отметил ты" : `отметил: ${who(m.reporter)}`;
+    body.push(el("p", { class: "hint" }, m.owner.id ? `Хозяин нашёлся сам (${by}).` : `Чьи вещи — неизвестно (${by}).`));
+  }
   if (m.booking && isMe(m.booking.user)) {
     body.push(el("p", { class: "hint" }, `Это твоя бронь на ${when(m.booking.at)}. В это время машина будет ждать тебя ${S.claim} мин.`));
     body.push(btn("Отменить бронь", () => act({ action: "unbook", id: m.booking.id }), "secondary"));
@@ -346,7 +353,7 @@ function openMachine(m) {
   if (m.status !== "free" && m.status !== "hold" && m.owner.id === 0 && !marked) {
     body.push(btn("Это мои вещи", () => act({ action: "claim", t: m.t, n: m.n }), "secondary"));
   }
-  if (m.status === "run" && (mine || marked || admin)) body.push(btn("Освободить", () => act({ action: "free", t: m.t, n: m.n }), "danger"));
+  if (m.status === "run" && ((m.reporter ? marked : mine) || admin)) body.push(btn("Освободить", () => act({ action: "free", t: m.t, n: m.n }), "danger"));
   if (leftover && (mine || marked || admin)) body.push(btn("Вещи забраны", () => act({ action: "free", t: m.t, n: m.n })));
   if (leftover && !mine) body.push(btn("Вещи переложены — указать куда", () => openMove(m), "secondary"));
   if (m.status === "hold" && mine) body.push(btn("Отказаться", () => act({ action: "free", t: m.t, n: m.n }), "danger"));
@@ -710,25 +717,41 @@ function roomView() {
   ];
 }
 
+function canAskDm() {
+  return !!(tg && tg.requestWriteAccess && tg.isVersionAtLeast && tg.isVersionAtLeast("6.9"));
+}
+
+function openBot() {
+  const link = `https://t.me/${S.bot}?start=app`;
+  if (tg && tg.openTelegramLink) tg.openTelegramLink(link); else window.open(link);
+}
+
+function allowDm(auto) {
+  if (!canAskDm()) { if (!auto) openBot(); return; }
+  tg.requestWriteAccess((ok) => { if (ok) act({ action: "dm" }); });
+}
+
 function dmCard() {
   if (S.dm === 1 || !S.bot) return null;
-  const link = `https://t.me/${S.bot}?start=app`;
-  const open = () => (tg && tg.openTelegramLink ? tg.openTelegramLink(link) : window.open(link));
+  const ask = canAskDm();
   return el("section", { class: "card" },
     el("b", {}, "Включи личные уведомления"),
-    el("p", { class: "hint", style: "margin:6px 0 0" }, "Нажми «Старт» в чате с ботом — тогда он сможет писать тебе лично: когда стирка заканчивается, подошла твоя очередь или бронь, твои вещи переложили или нужно подтвердить бронь игровой. Без этого напоминания придут в общий чат."),
-    btn("Открыть бота", open, "secondary"));
+    el("p", { class: "hint", style: "margin:6px 0 0" },
+      (ask ? "Разреши боту писать тебе" : "Нажми «Старт» в чате с ботом") + (S.room
+        ? " — тогда он сможет писать тебе лично: когда стирка заканчивается, подошла твоя очередь или бронь, твои вещи переложили или нужно подтвердить бронь игровой. Без этого напоминания придут в общий чат."
+        : " — тогда он сможет писать тебе лично: когда стирка заканчивается, подошла твоя очередь или бронь, или твои вещи переложили. Без этого напоминания придут в общий чат.")),
+    btn(ask ? "Разрешить" : "Открыть бота", () => allowDm(false), "secondary"));
 }
 
 function render() {
   if (!section) section = S.section;
-  const switcher = el("div", { class: "tabs" },
+  const switcher = S.room && el("div", { class: "tabs" },
     [["laundry", "Прачечная"], ["playroom", R().name]].map(([k, label]) =>
       el("button", { class: k === section ? "tab on" : "tab", onclick: () => { section = k; render(); } }, label)));
   app.replaceChildren(...[
     switcher,
     dmCard(),
-    ...(section === "playroom" ? roomView() : laundryView()),
+    ...(S.room && section === "playroom" ? roomView() : laundryView()),
     privacyCard(),
   ].filter(Boolean));
 }

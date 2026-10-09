@@ -27,6 +27,7 @@ class H(BaseHTTPRequestHandler):
             if th: res.update(message_thread_id=th, is_topic_message=True)
             where = "DM " + str(body["chat_id"]) if body["chat_id"] > 0 else f"CHAT[topic {th or 'General'}]"
             print(f"{where}: " + body["text"].replace("\n", " | ")[:90], flush=True)
+        if method == "leaveChat": sent.append({"chat_id": body["chat_id"], "left": True})
         if method.startswith("setMy"): print("TG", method, json.dumps(body, ensure_ascii=False)[:140], flush=True)
         self.reply({"ok": True, "result": res})
     def do_GET(self):

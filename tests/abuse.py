@@ -110,6 +110,90 @@ for i in range(8):
     update({"message": {"message_id": 10 + i, "text": "/start", "from": {"id": spammer, "first_name": "Спамер"}, "chat": {"id": spammer, "type": "private"}}})
 assert len([x for x in sent()[before:] if x["chat_id"] == spammer]) == 5
 
+print("--- /problem в личке: проблема уходит владельцу бота, не больше 5 в час")
+reporter = FRESH_UID + random.randrange(10 ** 9)
+dm = {"from": {"id": reporter, "first_name": "Жалобщик"}, "chat": {"id": reporter, "type": "private"}}
+owner = {"from": {"id": 1, "first_name": "Владелец"}, "chat": {"id": 1, "type": "private"}}
+bot = {"from": {"id": 1, "is_bot": True, "first_name": "Бот"}}
+before = len(sent())
+update({"message": {"message_id": 1, "text": "/problem стиралка 3 не показывается", **dm}})
+update({"message": {"message_id": 2, "text": "/problem", **dm}})
+prompt = [x for x in sent()[before:] if x["chat_id"] == reporter and "Опиши проблему" in x["text"]]
+assert len(prompt) == 1, sent()[before:]
+asked = {"message_id": 3, "text": prompt[0]["text"], "chat": dm["chat"], **bot}
+update({"message": {"message_id": 4, "text": "приложение не открывается", "reply_to_message": asked, **dm}})
+update({"message": {"message_id": 5, "text": "просто сообщение", **dm}})
+got = [x["text"] for x in sent()[before:] if x["chat_id"] == 1 and f"id <code>{reporter}</code>" in x["text"]]
+assert len(got) == 2 and "стиралка 3 не показывается" in got[0] and "приложение не открывается" in got[1], got
+
+print("--- владелец отвечает на проблему, человек отвечает на ответ")
+report = {"message_id": 50, "text": f"Проблема от Жалобщик (id {reporter}):\n\nприложение не открывается", "chat": owner["chat"], **bot}
+before = len(sent())
+update({"message": {"message_id": 51, "text": "уже починили, проверь", "reply_to_message": report, **owner}})
+mine = [x["text"] for x in sent()[before:] if x["chat_id"] == reporter]
+assert len(mine) == 1 and mine[0].startswith("Ответ администратора бота:") and "уже починили, проверь" in mine[0], mine
+assert [x["text"] for x in sent()[before:] if x["chat_id"] == 1] == ["Отправлено."], sent()[before:]
+reply = {"message_id": 52, "text": mine[0], "chat": dm["chat"], **bot}
+before = len(sent())
+update({"message": {"message_id": 6, "text": "да, работает, спасибо", "reply_to_message": reply, **dm}})
+got = [x["text"] for x in sent()[before:] if x["chat_id"] == 1 and f"id <code>{reporter}</code>" in x["text"]]
+assert len(got) == 1 and "да, работает, спасибо" in got[0], got
+
+print("--- отвечать от имени владельца может только владелец")
+before = len(sent())
+update({"message": {"message_id": 53, "text": "подделка", "reply_to_message": {**report, "chat": {"id": 2, "type": "private"}}, "from": {"id": 2, "first_name": "Боря"}, "chat": {"id": 2, "type": "private"}}})
+assert [x for x in sent()[before:] if x["chat_id"] in (reporter, 2)] == [], sent()[before:]
+update({"message": {"message_id": 54, "text": "ответ", "reply_to_message": {**report, "text": f"Проблема от Тень (id {DM_BLOCKED_UID}):"}, **owner}})
+assert [x["text"] for x in sent()[before:] if x["chat_id"] == 1][-1].startswith("Не доставлено"), sent()[before:]
+
+print("--- лимит сообщений о проблемах")
+before = len(sent())
+for i in range(3):
+    update({"message": {"message_id": 7 + i, "text": f"ещё {i}", "reply_to_message": asked, **dm}})
+assert len([x for x in sent()[before:] if x["chat_id"] == 1 and f"id <code>{reporter}</code>" in x["text"]]) == 2
+assert len([x for x in sent()[before:] if x["chat_id"] == reporter and "попробуй через" in x["text"]]) == 1
+
+print("--- в проблеме принимаются только текст, JPG/PNG/WebP, PDF и MP4")
+shooter = FRESH_UID + random.randrange(10 ** 9)
+dm = {"from": {"id": shooter, "first_name": "Скриншотер"}, "chat": {"id": shooter, "type": "private"}}
+media = [
+    {"photo": [{"file_id": "p", "width": 90, "height": 90}], "caption": "вот скрин"},
+    {"document": {"file_id": "d", "mime_type": "image/png"}},
+    {"video": {"file_id": "v", "mime_type": "video/mp4"}},
+    {"document": {"file_id": "w", "mime_type": "image/webp"}},
+    {"document": {"file_id": "f", "mime_type": "application/pdf"}},
+    {"sticker": {"file_id": "s"}},
+    {"animation": {"file_id": "a", "mime_type": "video/mp4"}, "document": {"file_id": "a", "mime_type": "video/mp4"}},
+]
+before = len(sent())
+for i, extra in enumerate(media):
+    update({"message": {"message_id": 20 + i, "reply_to_message": {**asked, "chat": dm["chat"]}, **extra, **dm}})
+assert len([x for x in sent()[before:] if x["chat_id"] == 1 and f"id <code>{shooter}</code>" in x["text"]]) == 5, sent()[before:]
+mine = [x["text"] for x in sent()[before:] if x["chat_id"] == shooter]
+assert [t.startswith("Спасибо") for t in mine] == [True] * 5 + [False, False] and mine[-1].startswith("Такой файл не подходит") and "Опиши проблему" in mine[-1], mine
+
+print("--- в проблеме не принимаются файлы больше 20 МБ")
+heavy = FRESH_UID + random.randrange(10 ** 9)
+dm = {"from": {"id": heavy, "first_name": "Тяжеловес"}, "chat": {"id": heavy, "type": "private"}}
+mb = 1024 * 1024
+media = [
+    {"video": {"file_id": "v", "mime_type": "video/mp4", "file_size": 21 * mb}},
+    {"document": {"file_id": "d", "mime_type": "image/png", "file_size": 50 * mb}},
+    {"document": {"file_id": "d", "mime_type": "image/jpeg", "file_size": 20 * mb}},
+    {"photo": [{"file_id": "s", "width": 90, "height": 90, "file_size": 5000}, {"file_id": "p", "width": 1280, "height": 1280, "file_size": 300000}]},
+]
+before = len(sent())
+for i, extra in enumerate(media):
+    update({"message": {"message_id": 40 + i, "reply_to_message": {**asked, "chat": dm["chat"]}, **extra, **dm}})
+assert len([x for x in sent()[before:] if x["chat_id"] == 1 and f"id <code>{heavy}</code>" in x["text"]]) == 2, sent()[before:]
+mine = [x["text"] for x in sent()[before:] if x["chat_id"] == heavy]
+assert [t.startswith("Файл слишком большой") for t in mine] == [True, True, False, False] and mine[-1].startswith("Спасибо"), mine
+assert "50 МБ, а можно до 20 МБ" in mine[1] and "Опиши проблему" in mine[1], mine[1]
+before = len(sent())
+retry = {"message_id": 60, "text": mine[1], "chat": dm["chat"], **bot}
+update({"message": {"message_id": 61, "text": "вот текстом", "reply_to_message": retry, **dm}})
+assert len([x for x in sent()[before:] if x["chat_id"] == 1 and "вот текстом" in x["text"]]) == 1, sent()[before:]
+
 print("--- команды в группе работают только у админов, в том числе анонимных")
 st, d = hook("/board", chat=SPARE_CH, sender={"id": 2, "first_name": "Боря"}); assert st == 200, d
 assert rows("SELECT 1 FROM boards WHERE chat_id = ?", SPARE_CH) == [], "участник поставил доску"

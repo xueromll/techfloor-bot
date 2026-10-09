@@ -66,4 +66,20 @@ st, d = api(ANYA, {"action": "load", "t": "w", "n": 9, "owner": "me"}); w9 = m(d
 assert w9["status"] == "loaded" and w9["owner"]["id"] == 0 and w9["reporter"]["id"] == 1, w9
 sql("UPDATE machines SET ends_at = ? WHERE mtype='w' AND num=9", time.time() - 1); cron()
 st, d = api(ANYA); assert m(d, "w", 9)["status"] == "free", m(d, "w", 9)
+print("--- «Это мои вещи» на идущей программе не даёт её освободить, отметивший получает уведомление")
+wipe("machines")
+api(BORYA, {"action": "take", "t": "w", "n": 2, "time": "40", "owner": "unknown"})
+before = len(sent())
+st, d = api(GALYA, {"action": "claim", "t": "w", "n": 2}); assert m(d, "w", 2)["owner"]["id"] == 4, m(d, "w", 2)
+assert [x for x in sent()[before:] if x["chat_id"] == 2 and "нашёлся хозяин" in x["text"]], sent()[before:]
+st, d = api(GALYA, {"action": "free", "t": "w", "n": 2}); assert "Пока программа идёт" in err(d), d
+st, d = api(GALYA); assert m(d, "w", 2)["status"] == "run", m(d, "w", 2)
+before = len(sent())
+st, d = api(BORYA, {"action": "free", "t": "w", "n": 2}); assert m(d, "w", 2)["status"] == "free", m(d, "w", 2)
+assert [x for x in sent()[before:] if x["chat_id"] == 4 and "освободили" in x["text"]], sent()[before:]
+print("--- «Не знаю чьи» не перезаписывает чужую отметку")
+st, d = api(BORYA, {"action": "load", "t": "w", "n": 4}); assert st == 200, d
+st, d = api(GALYA, {"action": "take", "t": "w", "n": 4, "time": "40", "owner": "unknown"}); assert "чужие вещи" in err(d), d
+st, d = api(GALYA, {"action": "free", "t": "w", "n": 4}); assert "Освободить может" in err(d), d
+st, d = api(GALYA); w4 = m(d, "w", 4); assert w4["status"] == "loaded" and w4["reporter"]["id"] == 2, w4
 print("DONE TESTS OK")

@@ -41,6 +41,29 @@ st, d = hook("/board", chat=SPARE_CH); assert st == 200, (st, d)
 assert rows("SELECT 1 FROM boards WHERE chat_id = ?", SPARE_CH) == [(1,)], "вебхук с секретом не сработал"
 sql("DELETE FROM boards WHERE chat_id = ?", SPARE_CH)
 
+print("--- бот выходит из чужих чатов и не работает в них")
+left = lambda: [x for x in sent() if x["chat_id"] == FOREIGN_CH and x.get("left")]
+before = len(left())
+st, d = hook("/board", chat=FOREIGN_CH); assert st == 200, (st, d)
+assert rows("SELECT 1 FROM boards WHERE chat_id = ?", FOREIGN_CH) == [], "бот поставил доску в чужом чате"
+assert len(left()) == before + 1, "бот не вышел из чужого чата после команды"
+st, d = update({"my_chat_member": {"chat": {"id": FOREIGN_CH, "type": "supergroup", "title": "Чужой"}, "from": ADMIN, "date": int(time.time()),
+    "old_chat_member": {"status": "left", "user": {"id": 1, "is_bot": True}}, "new_chat_member": {"status": "member", "user": {"id": 1, "is_bot": True}}}})
+assert st == 200, (st, d)
+assert len(left()) == before + 2, "бот не вышел из чужого чата, куда его добавили"
+assert any(x["chat_id"] == FOREIGN_CH and "только в чате общаги" in x.get("text", "") for x in sent()), "бот не объяснил, почему уходит"
+assert one("SELECT COUNT(*) FROM events WHERE chat_id = ? AND action = 'foreign'", FOREIGN_CH) == 2
+update({"my_chat_member": {"chat": {"id": SPARE_CH, "type": "supergroup"}, "from": ADMIN, "date": int(time.time()),
+    "old_chat_member": {"status": "left", "user": {"id": 1, "is_bot": True}}, "new_chat_member": {"status": "member", "user": {"id": 1, "is_bot": True}}}})
+assert not [x for x in sent() if x["chat_id"] == SPARE_CH and x.get("left")], "бот вышел из разрешённого чата"
+sql("INSERT INTO boards (chat_id, message_id, text, thread_id) VALUES (?, 77, 'x', NULL)", FOREIGN_CH)
+st, d = api(init(1, "Аня", "anya", start=FOREIGN_CH)); assert st == 403 and "только в чате общаги" in err(d), (st, d)
+st, txt = http("/setup?key=" + SECRET); assert f"Вышел из чужих чатов: {FOREIGN_CH}" in txt, txt
+assert rows("SELECT 1 FROM boards WHERE chat_id = ?", FOREIGN_CH) == [], "/setup не убрал доску из чужого чата"
+assert len(left()) == before + 3, "/setup не вывел бота из чужого чата"
+st, txt = http("/setup?key=" + SECRET); assert "Вышел из" not in txt and str(CH) in txt, txt
+sql("DELETE FROM events WHERE chat_id = ?", FOREIGN_CH)
+
 print("--- /setup открывается только по секрету")
 st, txt = http("/setup"); assert st == 403, (st, txt)
 st, txt = http("/setup?key=" + SECRET.upper()); assert st == 403, (st, txt)
