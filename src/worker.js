@@ -24,6 +24,26 @@ const AUTH_CACHE_MAX = 200;
 const SWEEP_SECONDS = 600;
 const RECENT_SECONDS = 120;
 const SCHEMA_VERSION = 3;
+const ROOM_USER_BOOKINGS = 3;
+const INIT_DATA_MAX = 4096;
+const API_BODY_MAX = 8 * 1024;
+const WEBHOOK_BODY_MAX = 1024 * 1024;
+const FLOOD_BLOCK_MINUTES = 30;
+const BLOCK_CACHE_SECONDS = 60;
+const BLOCK_CACHE_MAX = 500;
+const HITS_MAX = 10000;
+const BLOCK_MAX_DAYS = 365;
+
+const LIMITS = {
+  state: { limit: 60, seconds: 60, scaled: true },
+  action: { limit: 20, seconds: 60, scaled: true },
+  fail: { limit: 30, seconds: 600, scaled: true },
+  strike: { limit: 20, seconds: 600 },
+  room: { limit: 6, seconds: 600 },
+  nudge: { limit: 5, seconds: 3600 },
+  command: { limit: 5, seconds: 60 },
+  tap: { limit: 20, seconds: 60 },
+};
 
 const WALLS = [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11]];
 
@@ -34,6 +54,7 @@ const MACHINES = {
 
 const IRONING_BOARD = "Гладильная доска";
 const ANONYMOUS = "Аноним";
+const NOT_FROM_TELEGRAM = "Открой приложение через Telegram.";
 
 const HELP =
   "Привет! Я бот техэтажа общаги.\n\n" +
@@ -46,7 +67,8 @@ const HELP =
   "вечером накануне я спрошу, нужна ли бронь на завтра, и напомню за полчаса до начала. " +
   "Теперь, после /start, я могу тебе писать.\n\n" +
   "Для админов чата: сделайте бота админом (закреплять и удалять сообщения) и отправьте " +
-  "/board в теме про стирку и /playroom в теме про игровую.";
+  "/board в теме про стирку и /playroom в теме про игровую. Нарушителю можно закрыть доступ к приложению: " +
+  "ответьте на его сообщение командой /block (можно со сроком: /block 3d), вернуть — /unblock, список — /blocked.";
 
 const DESCRIPTION =
   "Бот техэтажа общаги.\n\n" +
@@ -98,6 +120,10 @@ const SCHEMA = [
     user_id INTEGER NOT NULL, user_name TEXT NOT NULL, username TEXT,
     starts REAL NOT NULL, ends REAL NOT NULL, reason TEXT, created_at REAL NOT NULL,
     asked INTEGER NOT NULL DEFAULT 0, warned INTEGER NOT NULL DEFAULT 0)`,
+  `CREATE TABLE IF NOT EXISTS blocks (
+    chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, until REAL, reason TEXT NOT NULL,
+    by_id INTEGER, created_at REAL NOT NULL,
+    PRIMARY KEY (chat_id, user_id))`,
 ];
 
 const MIGRATIONS = [
@@ -114,16 +140,21 @@ const MIGRATIONS = [
 ];
 
 const NUMBERS = WALLS.flat();
-const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings"];
+const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings", "blocks"];
 const UNKNOWN = { id: 0, name: "неизвестно", username: null };
 
 const LEFTOVER = new Set(["done", "parked", "loaded"]);
 const REPLACEABLE = new Set(["hold", "done", "loaded"]);
 const ROOM_ACTIONS = new Set(["room_book", "room_cancel", "admin_reset_room", "privacy"]);
+const ANNOUNCING = new Set(["room_book", "room_cancel"]);
+const COMMANDS = ["/start", "/board", "/playroom", "/block", "/unblock", "/blocked"];
 
 const memberCache = new Map();
 const authCache = new Map();
+const blockCache = new Map();
+const hits = new Map();
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 let botUsername = null;
 let schemaReady = false;
 let initDataKey = null;
@@ -152,26 +183,111 @@ function cacheSet(map, k, data, max) {
   if (map.size > max) map.delete(map.keys().next().value);
 }
 
+function limitOf(env, name) {
+  const { limit, seconds, scaled } = LIMITS[name];
+  const scale = Number(env.RATE_LIMIT_SCALE) > 0 ? Number(env.RATE_LIMIT_SCALE) : 1;
+  return { limit: scaled ? Math.round(limit * scale) : limit, seconds };
+}
+
+function meter(env, name, id) {
+  const { limit, seconds } = limitOf(env, name);
+  const k = `${name}:${id}`;
+  const t = now();
+  let entry = hits.get(k);
+  if (!entry || t - entry.at >= seconds) {
+    entry = { at: t, n: 0 };
+    hits.delete(k);
+    hits.set(k, entry);
+    if (hits.size > HITS_MAX) hits.delete(hits.keys().next().value);
+  }
+  return { entry, limit, retry: Math.max(1, Math.ceil(entry.at + seconds - t)) };
+}
+
+function full(env, name, id) {
+  const { entry, limit, retry } = meter(env, name, id);
+  return entry.n >= limit ? retry : 0;
+}
+
+function spend(env, name, id) {
+  const { entry, limit, retry } = meter(env, name, id);
+  entry.n += 1;
+  return entry.n > limit ? retry : 0;
+}
+
+function same(a, b) {
+  const x = encoder.encode(String(a ?? ""));
+  const y = encoder.encode(String(b ?? ""));
+  if (x.length !== y.length) return false;
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
+  return diff === 0;
+}
+
+async function readBody(request, limit) {
+  if (Number(request.headers.get("Content-Length")) > limit) throw new ApiError("Слишком большой запрос.", 413);
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel();
+      throw new ApiError("Слишком большой запрос.", 413);
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const c of chunks) {
+    bytes.set(c, offset);
+    offset += c.byteLength;
+  }
+  return decoder.decode(bytes);
+}
+
+async function readObject(request, limit) {
+  let body;
+  try {
+    body = JSON.parse(await readBody(request, limit));
+  } catch (e) {
+    if (e instanceof ApiError) throw e;
+    throw new ApiError("Некорректный запрос.");
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new ApiError("Некорректный запрос.");
+  return body;
+}
+
 class ApiError extends Error {
-  constructor(message, status = 400) {
+  constructor(message, status = 400, retry = 0) {
     super(message);
     this.status = status;
+    this.retry = retry;
   }
+}
+
+function tooMany(retry) {
+  return new ApiError(`Слишком много запросов — подожди ${retry} сек.`, 429, retry);
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const ip = request.headers.get("CF-Connecting-IP") || "";
     try {
       if (url.pathname === "/") return page(request);
-      await ensureSchema(env);
-      if (url.pathname === "/telegram" && request.method === "POST") return await onWebhook(request, env);
-      if (url.pathname === "/setup") return await onSetup(url, env);
+      if (url.pathname === "/telegram" && request.method === "POST") return await onWebhook(request, env, ip);
+      if (url.pathname === "/setup") return await onSetup(url, env, ip);
       if (url.pathname === "/api/state") return await apiState(request, env);
       if (url.pathname === "/api/action" && request.method === "POST") return await apiAction(request, env);
-      return new Response("Not found", { status: 404 });
+      return respond("Not found", 404);
     } catch (e) {
-      if (e instanceof ApiError) return json({ error: e.message }, e.status);
+      if (e instanceof ApiError) {
+        if (e.message === NOT_FROM_TELEGRAM) spend(env, "fail", ip);
+        return json({ error: e.message }, e.status, e.retry ? { "Retry-After": String(e.retry) } : {});
+      }
       console.error(e);
       return json({ error: "Ошибка сервера, попробуй ещё раз." }, 500);
     }
@@ -183,7 +299,7 @@ export default {
 };
 
 function page(request) {
-  const headers = { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache", ETag: PAGE_ETAG };
+  const headers = { ...SAFE_HEADERS, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache", ETag: PAGE_ETAG };
   if (request.headers.get("If-None-Match") === PAGE_ETAG) return new Response(null, { status: 304, headers });
   return new Response(PAGE, { headers });
 }
@@ -212,7 +328,11 @@ function fmt(env, locale, options) {
   return formatters.get(id);
 }
 const key = (mtype, num) => `${mtype}:${num}`;
-const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
+const SAFE_HEADERS = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
+const json = (data, status = 200, extra = {}) =>
+  new Response(JSON.stringify(data), { status, headers: { ...SAFE_HEADERS, "Content-Type": "application/json", "Cache-Control": "no-store", ...extra } });
+const respond = (body, status = 200) =>
+  new Response(body, { status, headers: { ...SAFE_HEADERS, "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
 const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 async function ensureSchema(env) {
@@ -381,6 +501,12 @@ async function notice(env, chatId, p, text, dmFirst = false) {
     }
   }
   await say(env, chatId, `${tag(p)}, ${text}`);
+}
+
+async function nudge(env, chatId, from, p, text, dmFirst = false) {
+  if (!p || !p.id) return;
+  if (p.id !== from.id && spend(env, "nudge", `${from.id}:${p.id}`)) return;
+  await notice(env, chatId, p, text, dmFirst);
 }
 
 async function noticeMachine(env, row, text, unknownText) {
@@ -617,6 +743,7 @@ async function tick(env, chatId = null) {
     await env.DB.batch([
       env.DB.prepare("DELETE FROM moved WHERE at < ?").bind(t - CLOTHES_HOURS * 3600),
       env.DB.prepare("DELETE FROM room_bookings WHERE ends < ?").bind(t - 86400),
+      env.DB.prepare("DELETE FROM blocks WHERE until IS NOT NULL AND until < ?").bind(t),
     ]);
   }
   await remindRoomBookings(env, t);
@@ -757,14 +884,21 @@ async function updateRoomBoard(env, chatId, recreate = false, thread = undefined
   await placeBoard(env, "pboards", chatId, await roomText(env, chatId), markup, recreate, thread);
 }
 
-async function onWebhook(request, env) {
-  if (request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.WEBHOOK_SECRET) return new Response("Forbidden", { status: 403 });
+async function onWebhook(request, env, ip) {
+  const retry = full(env, "fail", ip);
+  if (retry) return json({ error: "Too many failed attempts" }, 429, { "Retry-After": String(retry) });
+  if (!env.WEBHOOK_SECRET || !same(request.headers.get("X-Telegram-Bot-Api-Secret-Token"), env.WEBHOOK_SECRET)) {
+    spend(env, "fail", ip);
+    return respond("Forbidden", 403);
+  }
   try {
-    await onUpdate(await request.json(), env);
+    const update = await readObject(request, WEBHOOK_BODY_MAX);
+    await ensureSchema(env);
+    await onUpdate(update, env);
   } catch (e) {
     console.error("Update failed", e);
   }
-  return new Response("ok");
+  return respond("ok");
 }
 
 async function onUpdate(update, env) {
@@ -777,24 +911,116 @@ async function onUpdate(update, env) {
     await updateRoomBoard(env, msg.migrate_to_chat_id, true);
     return;
   }
-  if (!msg.text || !msg.text.startsWith("/")) return;
+  if (typeof msg.text !== "string" || !msg.text.startsWith("/")) return;
   const [command, target] = msg.text.trim().split(/\s+/)[0].split("@");
   if (target && target.toLowerCase() !== (await username(env)).toLowerCase()) return;
-  if (!["/start", "/board", "/playroom"].includes(command)) return;
+  if (!COMMANDS.includes(command)) return;
   const chat = msg.chat;
   if (chat.type === "private") {
-    if (msg.from) await setDm(env, msg.from.id, true);
+    if (!msg.from || spend(env, "command", msg.from.id)) return;
+    await setDm(env, msg.from.id, true);
     await tg(env, "sendMessage", { chat_id: chat.id, text: command === "/start" ? HELP : `Отправь ${command} в групповом чате.` });
     return;
   }
   if (chat.type !== "group" && chat.type !== "supergroup") return;
+  const anonymousAdmin = !!msg.sender_chat && msg.sender_chat.id === chat.id;
+  const admin = anonymousAdmin || (!!msg.from && (await membership(env, chat.id, msg.from.id)).admin);
+  if (!admin) {
+    if (msg.from && !spend(env, "command", msg.from.id)) await tg(env, "deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+    return;
+  }
   await tg(env, "deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
   const thread = msg.is_topic_message && msg.message_thread_id ? msg.message_thread_id : null;
   if (command === "/playroom") await updateRoomBoard(env, chat.id, true, thread);
-  else await updatePinned(env, chat.id, command === "/board", thread);
+  else if (command === "/board" || command === "/start") await updatePinned(env, chat.id, command === "/board", thread);
+  else await moderate(env, msg, command, thread, anonymousAdmin ? null : msg.from);
+}
+
+function quiet(p) {
+  return `${escape(p.name)} (id ${p.id})`;
+}
+
+function moment(env, ts) {
+  return `${dayLabel(env, ts)}, ${clock(env, ts)}`;
+}
+
+function parseSpan(token) {
+  const match = String(token).toLowerCase().match(/^(\d{1,4})(m|h|d|м|ч|д)$/);
+  if (!match) return null;
+  const unit = { m: 60, м: 60, h: 3600, ч: 3600, d: 86400, д: 86400 }[match[2]];
+  const seconds = Number(match[1]) * unit;
+  return seconds > 0 && seconds <= BLOCK_MAX_DAYS * 86400 ? seconds : null;
+}
+
+async function blockTarget(env, chatId, msg, words) {
+  for (const word of words) {
+    const id = word.match(/^\d{1,15}$/);
+    const handle = word.match(/^@([A-Za-z0-9_]{4,32})$/);
+    if (!id && !handle) continue;
+    const row = id
+      ? await first(env, "SELECT * FROM people WHERE chat_id = ? AND user_id = ?", chatId, Number(word))
+      : await first(env, "SELECT * FROM people WHERE chat_id = ? AND lower(username) = lower(?)", chatId, handle[1]);
+    if (row) return { id: row.user_id, name: row.name, username: row.username };
+    if (id) return { id: Number(word), name: "без имени", username: null };
+    return { missing: word };
+  }
+  const reply = msg.reply_to_message;
+  if (!reply || reply.forum_topic_created || !reply.from || reply.from.is_bot) return null;
+  return { id: reply.from.id, name: reply.from.first_name || "без имени", username: reply.from.username ?? null };
+}
+
+async function moderate(env, msg, command, thread, by) {
+  const chatId = msg.chat.id;
+  const t = now();
+  const answer = (text) => say(env, chatId, text, { message_thread_id: thread });
+  if (command === "/blocked") {
+    const rows = await all(
+      env,
+      "SELECT b.user_id, b.until, b.reason, p.name, p.username FROM blocks b LEFT JOIN people p ON p.chat_id = b.chat_id AND p.user_id = b.user_id " +
+        "WHERE b.chat_id = ? AND (b.until IS NULL OR b.until > ?) ORDER BY b.created_at",
+      chatId, t
+    );
+    if (!rows.length) return answer("Сейчас доступ к приложению никому не закрыт.");
+    const lines = rows.map((r) => {
+      const who = quiet({ id: r.user_id, name: r.name || "без имени" });
+      const till = r.until ? `до ${moment(env, r.until)}` : "бессрочно";
+      return `• ${who} — ${till}${r.reason === "flood" ? " (слишком много запросов)" : ""}`;
+    });
+    return answer(`Доступ к приложению закрыт:\n${lines.join("\n")}\n\nВернуть: /unblock id`);
+  }
+  const words = msg.text.trim().split(/\s+/).slice(1);
+  const target = await blockTarget(env, chatId, msg, words);
+  if (!target) return answer(`Кого? Ответь командой ${command} на сообщение человека или напиши ${command} @username.`);
+  if (target.missing) return answer(`Не нашёл ${escape(target.missing)} среди тех, кто открывал приложение в этом чате. Ответь командой на его сообщение.`);
+  if (command === "/unblock") {
+    blockCache.delete(`${chatId}:${target.id}`);
+    const lifted = await changed(env, "DELETE FROM blocks WHERE chat_id = ? AND user_id = ?", chatId, target.id);
+    return answer(lifted ? `${quiet(target)} снова может пользоваться приложением.` : `${quiet(target)}: доступ и так открыт.`);
+  }
+  if (by && target.id === by.id) return answer("Себе доступ закрыть нельзя.");
+  if ((await membership(env, chatId, target.id)).admin) return answer("Админу чата доступ закрыть нельзя.");
+  const span = words.map(parseSpan).find((s) => s);
+  const until = span ? t + span : null;
+  const out = await env.DB.batch([
+    env.DB.prepare("INSERT OR REPLACE INTO blocks (chat_id, user_id, until, reason, by_id, created_at) VALUES (?, ?, ?, 'admin', ?, ?)")
+      .bind(chatId, target.id, until, by ? by.id : null, t),
+    env.DB.prepare("DELETE FROM queue WHERE chat_id = ? AND user_id = ?").bind(chatId, target.id),
+    env.DB.prepare("DELETE FROM nexts WHERE chat_id = ? AND user_id = ?").bind(chatId, target.id),
+    env.DB.prepare("DELETE FROM bookings WHERE chat_id = ? AND user_id = ?").bind(chatId, target.id),
+    env.DB.prepare("DELETE FROM room_bookings WHERE chat_id = ? AND user_id = ? AND starts > ?").bind(chatId, target.id, t),
+  ]);
+  cacheSet(blockCache, `${chatId}:${target.id}`, { until, reason: "admin" }, BLOCK_CACHE_MAX);
+  const rooms = out[4].meta.changes;
+  await answer(
+    `${quiet(target)} больше не может пользоваться приложением ${until ? "до " + moment(env, until) : "— пока админ не вернёт доступ (/unblock)"}. ` +
+      "Очередь и брони прачечной сняты" + (rooms ? `, будущих броней ${ROOM_GEN} отменено: ${rooms}.` : ".")
+  );
+  await updatePinned(env, chatId);
+  if (rooms) await updateRoomBoard(env, chatId);
 }
 
 async function onCallback(env, cq) {
+  if (!cq.from || spend(env, "tap", cq.from.id)) return;
   const parsed = String(cq.data || "").match(/^r([kc]):(\d+)$/);
   const answer = (text) => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
   const rewrite = (text) =>
@@ -841,8 +1067,14 @@ async function cronStatus(env) {
   return lines.join("\n");
 }
 
-async function onSetup(url, env) {
-  if (!env.WEBHOOK_SECRET || url.searchParams.get("key") !== env.WEBHOOK_SECRET) return new Response("Forbidden", { status: 403 });
+async function onSetup(url, env, ip) {
+  const retry = full(env, "fail", ip);
+  if (retry) return json({ error: "Too many failed attempts" }, 429, { "Retry-After": String(retry) });
+  if (!env.WEBHOOK_SECRET || !same(url.searchParams.get("key"), env.WEBHOOK_SECRET)) {
+    spend(env, "fail", ip);
+    return respond("Forbidden", 403);
+  }
+  await ensureSchema(env);
   const hook = await tg(env, "setWebhook", {
     url: `${url.origin}/telegram`,
     secret_token: env.WEBHOOK_SECRET,
@@ -857,6 +1089,9 @@ async function onSetup(url, env) {
       commands: [
         { command: "board", description: "Закрепить прачечную в этой теме" },
         { command: "playroom", description: "Закрепить игровую в этой теме" },
+        { command: "block", description: "Закрыть доступ к приложению (ответом на сообщение)" },
+        { command: "unblock", description: "Вернуть доступ к приложению" },
+        { command: "blocked", description: "Кому закрыт доступ" },
       ],
       scope: { type: "all_chat_administrators" },
     }),
@@ -870,7 +1105,7 @@ async function onSetup(url, env) {
     await cronStatus(env),
     `Адрес Mini App для BotFather: ${url.origin}/`,
   ];
-  return new Response(lines.join("\n"), { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+  return respond(lines.join("\n"));
 }
 
 async function hmac(secret, data) {
@@ -917,32 +1152,75 @@ async function remember(env, chatId, me, row) {
 async function verifyInitData(env, raw) {
   const cached = cacheGet(authCache, raw, AUTH_CACHE_SECONDS);
   if (cached) return cached;
+  if (raw.length > INIT_DATA_MAX) throw new ApiError(NOT_FROM_TELEGRAM, 401);
   const params = new URLSearchParams(raw);
   const hash = params.get("hash");
-  if (!hash) throw new ApiError("Открой приложение через Telegram.", 401);
+  if (!hash) throw new ApiError(NOT_FROM_TELEGRAM, 401);
   params.delete("hash");
   const check = [...params.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([k, v]) => `${k}=${v}`).join("\n");
-  if (hex(await signInitData(env, check)) !== hash) throw new ApiError("Открой приложение через Telegram.", 401);
-  const user = JSON.parse(params.get("user") || "null");
-  if (!user || !user.id) throw new ApiError("Открой приложение через Telegram.", 401);
+  if (!same(hex(await signInitData(env, check)), hash)) throw new ApiError(NOT_FROM_TELEGRAM, 401);
+  let user = null;
+  try {
+    user = JSON.parse(params.get("user") || "null");
+  } catch (e) {
+    user = null;
+  }
+  if (!user || !Number.isSafeInteger(user.id) || user.id <= 0) throw new ApiError(NOT_FROM_TELEGRAM, 401);
   const data = { user, authDate: Number(params.get("auth_date")), start: params.get("start_param") || "" };
   cacheSet(authCache, raw, data, AUTH_CACHE_MAX);
   return data;
 }
 
-async function authorize(request, env) {
+function blockedText(env, b) {
+  if (b.reason === "flood") return `Слишком много запросов — доступ к приложению приостановлен до ${clock(env, b.until)}.`;
+  return `Админ чата закрыл тебе доступ к приложению${b.until ? " до " + moment(env, b.until) : ""}.`;
+}
+
+function activeBlock(chatId, userId) {
+  const hit = cacheGet(blockCache, `${chatId}:${userId}`, BLOCK_CACHE_SECONDS);
+  return hit && (hit.until === null || hit.until > now()) ? hit : null;
+}
+
+async function strike(env, chatId, userId) {
+  if (!spend(env, "strike", userId)) return;
+  const t = now();
+  const until = t + FLOOD_BLOCK_MINUTES * 60;
+  cacheSet(blockCache, `${chatId}:${userId}`, { until, reason: "flood" }, BLOCK_CACHE_MAX);
+  await ensureSchema(env);
+  await env.DB.prepare(
+    "INSERT INTO blocks (chat_id, user_id, until, reason, by_id, created_at) VALUES (?, ?, ?, 'flood', NULL, ?) " +
+      "ON CONFLICT (chat_id, user_id) DO UPDATE SET until = excluded.until, reason = excluded.reason, created_at = excluded.created_at " +
+      "WHERE blocks.reason = 'flood' OR (blocks.until IS NOT NULL AND blocks.until < excluded.until)"
+  ).bind(chatId, userId, until, t).run();
+}
+
+async function authorize(request, env, bucket) {
   const { user, authDate, start: startParam } = await verifyInitData(env, request.headers.get("X-Init-Data") || "");
-  if (now() - authDate > INIT_DATA_TTL) throw new ApiError("Сессия устарела — закрой и открой приложение заново.", 401);
-  const start = startParam.match(/^(-?\d+)(?:_([a-z]))?$/);
+  if (!(now() - authDate <= INIT_DATA_TTL)) throw new ApiError("Сессия устарела — закрой и открой приложение заново.", 401);
+  const start = startParam.match(/^(-?\d{1,15})(?:_([a-z]))?$/);
   if (!start) throw new ApiError("Открой приложение кнопкой из закреплённого сообщения в чате.", 400);
   const chatId = Number(start[1]);
   const section = start[2] === "p" ? "playroom" : "laundry";
-  const [configured, mine] = await batch(
+  const cached = activeBlock(chatId, user.id);
+  if (cached) throw new ApiError(blockedText(env, cached), 403);
+  const retry = spend(env, bucket, user.id);
+  if (retry) {
+    await strike(env, chatId, user.id);
+    const block = activeBlock(chatId, user.id);
+    throw block ? new ApiError(blockedText(env, block), 403) : tooMany(retry);
+  }
+  await ensureSchema(env);
+  const [configured, mine, blocked] = await batch(
     env,
     q(env, "SELECT 1 AS ok FROM boards WHERE chat_id = ? UNION SELECT 1 FROM pboards WHERE chat_id = ?", chatId, chatId),
-    q(env, "SELECT * FROM people WHERE chat_id = ? AND user_id = ?", chatId, user.id)
+    q(env, "SELECT * FROM people WHERE chat_id = ? AND user_id = ?", chatId, user.id),
+    q(env, "SELECT until, reason FROM blocks WHERE chat_id = ? AND user_id = ? AND (until IS NULL OR until > ?)", chatId, user.id, now())
   );
   if (!configured.length) throw new ApiError("В этом чате бот не настроен. Админу нужно отправить /board или /playroom.", 404);
+  if (blocked.length) {
+    cacheSet(blockCache, `${chatId}:${user.id}`, blocked[0], BLOCK_CACHE_MAX);
+    throw new ApiError(blockedText(env, blocked[0]), 403);
+  }
   const { inside, admin } = await membership(env, chatId, user.id);
   if (!inside) throw new ApiError("Приложение доступно только участникам чата.", 403);
   const me = { id: user.id, name: user.first_name, username: user.username ?? null };
@@ -1201,7 +1479,7 @@ const ACTIONS = {
     if (!(await occupy(env, chatId, mtype, num, owner, t, t + minutes * 60, "run", reporter, replaces))) return `${mname(mtype, num)} уже занята.`;
     await clearOwnerHolds(env, chatId, mtype, num, owner);
     if (reporter && owner.id) {
-      await notice(env, chatId, owner, `${mname(mtype, num)} отмечена как занятая твоими вещами (отметил: ${await label(env, chatId, me)}). Напомню, когда закончит.`);
+      await nudge(env, chatId, me, owner, `${mname(mtype, num)} отмечена как занятая твоими вещами (отметил: ${await label(env, chatId, me)}). Напомню, когда закончит.`);
     }
     return null;
   },
@@ -1222,9 +1500,10 @@ const ACTIONS = {
     }
     await clearOwnerHolds(env, chatId, mtype, num, owner);
     if (reporter && owner.id) {
-      await notice(
+      await nudge(
         env,
         chatId,
+        me,
         owner,
         `${mname(mtype, num)} отмечена как занятая твоими вещами, программа не запущена (отметил: ${await label(env, chatId, me)}). ` +
           `Забери вещи или запусти программу в приложении — через ${CLOTHES_HOURS} ч отметка снимется сама.`,
@@ -1259,7 +1538,7 @@ const ACTIONS = {
     if (row.kind === "parked") {
       await env.DB.prepare("DELETE FROM moved WHERE chat_id = ? AND to_mtype = ? AND to_num = ? AND owner_id = ?").bind(chatId, mtype, num, row.user_id).run();
     } else if (row.user_id && row.user_id !== me.id) {
-      await notice(env, chatId, person(row), `${MACHINES[mtype].acc} ${num} освободили. Кто: ${await label(env, chatId, me)}.`);
+      await nudge(env, chatId, me, person(row), `${MACHINES[mtype].acc} ${num} освободили. Кто: ${await label(env, chatId, me)}.`);
     }
     await handoff(env, chatId, mtype, num);
     return null;
@@ -1364,9 +1643,10 @@ const ACTIONS = {
     ).bind(chatId, ownerP.id, ownerP.name, ownerP.username ?? null, ...src, dest ? dest[0] : null, dest ? dest[1] : null, me.id, me.name, me.username ?? null, now()).run();
     if (ownerP.id && ownerP.id !== me.id) {
       const where = dest ? `в ${capitalize(MACHINES[dest[0]].acc)} ${dest[1]}` : "на гладильную доску";
-      await notice(
+      await nudge(
         env,
         chatId,
+        me,
         ownerP,
         `твои вещи из ${MACHINES[src[0]].gen} ${src[1]} переложили ${where}. Когда заберёшь, отметь это в приложении.`,
         true
@@ -1410,13 +1690,19 @@ const ACTIONS = {
     if (ends - starts > ROOM_MAX_HOURS * 3600) return `Бронь — не дольше ${ROOM_MAX_HOURS} ч.`;
     if (starts >= days[days.length - 1].end) return `Бронировать можно не дальше чем на ${ROOM_DAYS} дней вперёд.`;
     const reason = String(body.reason ?? "").replace(/\s+/g, " ").trim().slice(0, ROOM_REASON_LENGTH);
+    const t = now();
     const res = await env.DB.prepare(
       "INSERT INTO room_bookings (chat_id, user_id, user_name, username, starts, ends, reason, created_at) " +
-        "SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM room_bookings WHERE chat_id = ? AND starts < ? AND ends > ?)"
-    ).bind(chatId, me.id, me.name, me.username ?? null, starts, ends, reason || null, now(), chatId, ends, starts).run();
+        "SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM room_bookings WHERE chat_id = ? AND starts < ? AND ends > ?) " +
+        "AND (? OR (SELECT COUNT(*) FROM room_bookings WHERE chat_id = ? AND user_id = ? AND ends > ?) < ?)"
+    ).bind(
+      chatId, me.id, me.name, me.username ?? null, starts, ends, reason || null, t, chatId, ends, starts,
+      admin ? 1 : 0, chatId, me.id, t, ROOM_USER_BOOKINGS
+    ).run();
     if (!res.meta.changes) {
       const clash = await first(env, "SELECT * FROM room_bookings WHERE chat_id = ? AND starts < ? AND ends > ? ORDER BY starts LIMIT 1", chatId, ends, starts);
-      return `Это время пересекается с бронью ${clock(env, clash.starts)}–${clock(env, clash.ends)}. Выбери другое.`;
+      if (clash) return `Это время пересекается с бронью ${clock(env, clash.starts)}–${clock(env, clash.ends)}. Выбери другое.`;
+      return `Броней ${ROOM_GEN} у тебя уже максимум — ${ROOM_USER_BOOKINGS}. Отмени одну, чтобы забронировать новую.`;
     }
     const who = await plainName(env, chatId, me);
     await roomAnnounce(env, chatId, `${ROOM_NAME} забронирована: ${dayLabel(env, starts)}, ${clock(env, starts)}–${clock(env, ends)} — ${who}${reason ? ", " + escape(reason) : ""}.`);
@@ -1449,24 +1735,25 @@ const ACTIONS = {
 };
 
 async function apiState(request, env) {
-  const { chatId, me, admin, section } = await authorize(request, env);
+  const { chatId, me, admin, section } = await authorize(request, env, "state");
   await tick(env, chatId);
   return json(await state(env, chatId, me, admin, section));
 }
 
 async function apiAction(request, env) {
-  const { chatId, me, admin, section } = await authorize(request, env);
-  let body;
-  try {
-    body = await request.json();
-  } catch (e) {
-    throw new ApiError("Некорректный запрос.");
-  }
-  const action = Object.hasOwn(ACTIONS, body.action) ? ACTIONS[body.action] : null;
+  const { chatId, me, admin, section } = await authorize(request, env, "action");
+  const body = await readObject(request, API_BODY_MAX);
+  const action = typeof body.action === "string" && Object.hasOwn(ACTIONS, body.action) ? ACTIONS[body.action] : null;
   if (!action) throw new ApiError("Некорректный запрос.");
+  const announces = ANNOUNCING.has(body.action) && !admin;
+  if (announces) {
+    const retry = full(env, "room", me.id);
+    if (retry) throw new ApiError(`Слишком часто бронируешь и отменяешь — попробуй через ${Math.ceil(retry / 60)} мин.`, 429, retry);
+  }
   await tick(env, chatId);
   const error = await action(env, chatId, { id: me.id, name: me.name, username: me.username }, admin, body);
   if (error) throw new ApiError(error);
+  if (announces) spend(env, "room", me.id);
   if (body.action === "privacy") me.hidden = !!body.hidden;
   if (ROOM_ACTIONS.has(body.action)) await updateRoomBoard(env, chatId);
   else await updatePinned(env, chatId);

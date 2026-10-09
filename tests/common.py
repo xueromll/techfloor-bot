@@ -1,4 +1,4 @@
-import glob, hashlib, hmac, json, sqlite3, sys, threading, time, urllib.request, urllib.error
+import glob, hashlib, hmac, json, random, sqlite3, sys, threading, time, urllib.request, urllib.error
 from urllib.parse import urlencode
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -12,6 +12,7 @@ SPARE_CH = -1009999
 ADMIN_UID = 1
 DM_BLOCKED_UID = 3
 OUTSIDER_UID = 9
+FRESH_UID = 100000
 BAD_THREAD = 999
 CRON_TIMEOUT = 20
 
@@ -51,11 +52,13 @@ def update(payload, secret=SECRET):
         n = updates[0]
     return http("/telegram", {"update_id": n, **payload}, {} if secret is None else {"X-Telegram-Bot-Api-Secret-Token": secret})
 
-def hook(text, secret=SECRET, chat=CH):
-    return update({"message": {"message_id": 5, "text": text, "chat": {"id": chat, "type": "supergroup"}}}, secret)
+ADMIN = {"id": ADMIN_UID, "first_name": "Аня", "username": "anya"}
 
-def topic(text, th, chat=CH):
-    return update({"message": {"message_id": 7, "text": text, "message_thread_id": th, "is_topic_message": True, "chat": {"id": chat, "type": "supergroup", "is_forum": True}}})
+def hook(text, secret=SECRET, chat=CH, sender=ADMIN, **extra):
+    return update({"message": {"message_id": 5, "text": text, "from": sender, "chat": {"id": chat, "type": "supergroup"}, **extra}}, secret)
+
+def topic(text, th, chat=CH, sender=ADMIN):
+    return update({"message": {"message_id": 7, "text": text, "from": sender, "message_thread_id": th, "is_topic_message": True, "chat": {"id": chat, "type": "supergroup", "is_forum": True}}})
 
 def tap(bid, what, uid):
     return update({"callback_query": {"id": "cb1", "data": f"r{what}:{bid}", "from": {"id": uid, "first_name": "X"}, "message": {"message_id": 500, "chat": {"id": uid, "type": "private"}}}})
@@ -113,6 +116,13 @@ def parallel(*calls):
     for t in threads: t.start()
     for t in threads: t.join()
     return out
+
+def fresh(name, username=None, start=CH):
+    uid = FRESH_UID + random.randrange(10 ** 9)
+    return uid, init(uid, name, username, start=start)
+
+def sent():
+    with urllib.request.urlopen("http://127.0.0.1:8799/sent") as r: return json.loads(r.read().decode())
 
 def m(d, t, n): return next(x for x in d["machines"] if x["t"] == t and x["n"] == n)
 def err(d): return d.get("error", "") if isinstance(d, dict) else str(d)

@@ -6,6 +6,9 @@ keep_vars = true
 [triggers]
 crons = ["* * * * *"]
 
+[assets]
+directory = "./webapp"
+
 [vars]
 APP_SHORT_NAME = "techfloor"
 TZ_NAME = "Asia/Yekaterinburg"
