@@ -96,8 +96,9 @@ uid, NX = fresh("Шутник")
 assert api(NX)[0] == 200
 wipe("machines")
 before = len(sent())
-for i in range(4):
-    st, d = api(NX, {"action": "take", "t": "w", "n": 1, "time": "40", "owner": 4}); assert st == 200, d
+for i in range(6):
+    st, d = api(NX, {"action": "take", "t": "w", "n": 1, "time": "40", "owner": "unknown"}); assert st == 200, d
+    st, d = api(GALYA, {"action": "claim", "t": "w", "n": 1}); assert st == 200 and m(d, "w", 1)["owner"]["id"] == 4, d
     st, d = api(NX, {"action": "free", "t": "w", "n": 1}); assert st == 200, d
 pings = [x for x in sent()[before:] if f"tg://user?id={uid}" in x["text"]]
 assert len(pings) == 5, [x["text"] for x in pings]

@@ -32,6 +32,13 @@ st, d = api(GALYA, {"action": "claim", "t": "d", "n": 4}); assert m(d, "d", 4)["
 print("--- 12h later a forgotten done machine frees itself silently")
 sql("UPDATE machines SET ends_at = ? WHERE mtype='d' AND num=4", time.time() - 1); cron()
 st, d = api(ANYA); assert m(d, "d", 4)["status"] == "free", m(d, "d", 4)
+print("--- unknown owner's clothes moved -> chat is told where they went")
+api(BORYA, {"action": "take", "t": "w", "n": 8, "time": "40", "owner": "unknown"})
+sql("UPDATE machines SET ends_at = ? WHERE mtype='w' AND num=8", time.time() - 1); cron()
+before = len(sent())
+st, d = api(VOVA, {"action": "move", "ft": "w", "fn": 8, "to": "board"}); assert st == 200, d
+said = [x for x in sent()[before:] if x["chat_id"] == CH and "переложили на гладильную доску" in x["text"]]
+assert len(said) == 1 and "Стиралки 8" in said[0]["text"] and "Хозяин вещей не отмечен" in said[0]["text"], sent()[before:]
 print("--- вещи внутри, программу не запускали -> машина занята без таймера")
 wipe()
 st, d = api(BORYA, {"action": "load", "t": "w", "n": 6, "owner": "unknown"}); assert st == 200, d
@@ -47,8 +54,8 @@ st, d = api(ANYA, {"action": "take", "t": "d", "n": 3, "time": "30"}); d3 = m(d,
 assert d3["status"] == "run" and d3["owner"]["id"] == 1, d3
 st, d = api(ANYA, {"action": "free", "t": "d", "n": 3}); assert m(d, "d", 3)["status"] == "free", m(d, "d", 3)
 print("--- чужие вещи без программы можно переложить, машина уходит очереди")
-st, d = api(BORYA, {"action": "load", "t": "d", "n": 7, "owner": 4}); d7 = m(d, "d", 7)
-assert d7["status"] == "loaded" and d7["owner"]["id"] == 4, d7
+st, d = api(BORYA, {"action": "load", "t": "d", "n": 7, "owner": "unknown"}); d7 = m(d, "d", 7)
+assert d7["status"] == "loaded" and d7["owner"]["id"] == 0, d7
 for n in [1, 2, 3, 4, 5, 6, 8, 9, 10, 11]: sql("INSERT OR REPLACE INTO machines (chat_id, mtype, num, user_id, user_name, started_at, ends_at, kind) VALUES (?, 'd', ?, 99, 'X', ?, ?, 'run')", CH, n, time.time(), time.time() + 3000)
 st, d = api(VOVA, {"action": "queue", "t": "d"}); assert st == 200, d
 st, d = api(ANYA, {"action": "move", "ft": "d", "fn": 7, "to": "board"}); assert st == 200, d

@@ -7,7 +7,6 @@ const SLOT_MINUTES = 30;
 const BOOK_DAYS = 2;
 const CLOTHES_HOURS = 12;
 const BOOKING_GAP_MINUTES = 90;
-const PEOPLE_DAYS = 60;
 const ROOM_NAME = "Игровая";
 const ROOM_GEN = "игровой";
 const ROOM_REMIND_HOUR = 18;
@@ -154,8 +153,8 @@ const UNKNOWN = { id: 0, name: "неизвестно", username: null };
 
 const LEFTOVER = new Set(["done", "parked", "loaded"]);
 const REPLACEABLE = new Set(["hold", "done", "loaded"]);
-const ROOM_ACTIONS = new Set(["room_book", "room_cancel", "room_join", "room_leave", "admin_reset_room", "privacy"]);
-const ANNOUNCING = new Set(["room_book", "room_cancel"]);
+const ROOM_ACTIONS = new Set(["room_book", "room_edit", "room_cancel", "room_join", "room_leave", "admin_reset_room", "privacy"]);
+const ANNOUNCING = new Set(["room_book", "room_edit", "room_cancel"]);
 const COMMANDS = ["/start", "/board", "/playroom", "/unpin", "/block", "/unblock", "/blocked"];
 
 const memberCache = new Map();
@@ -493,29 +492,27 @@ async function setDm(env, userId, ok) {
   await env.DB.prepare("INSERT OR REPLACE INTO dm (user_id, ok) VALUES (?, ?)").bind(userId, ok ? 1 : 0).run();
 }
 
-async function notice(env, chatId, p, text, dmFirst = false) {
-  if (!p || !p.id) return;
-  const hidden = await isHidden(env, chatId, p.id);
-  if (hidden || dmFirst) {
-    const markup = dmFirst ? { inline_keyboard: [[{ text: "Открыть прачечную", url: await appLink(env, chatId) }]] } : undefined;
-    const dm = await tg(env, "sendMessage", { chat_id: p.id, text: capitalize(text), parse_mode: "HTML", reply_markup: markup });
-    if (dm.ok) {
-      await setDm(env, p.id, true);
-      return;
-    }
-    if (dm.error_code === 403 || /chat not found/i.test(dm.description || "")) await setDm(env, p.id, false);
-    if (hidden) {
-      await say(env, chatId, `<a href="tg://user?id=${p.id}">${ANONYMOUS}</a>, ${text}`);
-      return;
-    }
-  }
-  await say(env, chatId, `${tag(p)}, ${text}`);
+async function mention(env, chatId, p, text) {
+  const who = (await isHidden(env, chatId, p.id)) ? `<a href="tg://user?id=${p.id}">${ANONYMOUS}</a>` : tag(p);
+  await say(env, chatId, `${who}, ${text}`);
 }
 
-async function nudge(env, chatId, from, p, text, dmFirst = false) {
+async function notice(env, chatId, p, text) {
+  if (!p || !p.id) return;
+  const markup = { inline_keyboard: [[{ text: "Открыть прачечную", url: await appLink(env, chatId) }]] };
+  const dm = await tg(env, "sendMessage", { chat_id: p.id, text: capitalize(text), parse_mode: "HTML", reply_markup: markup });
+  if (dm.ok) {
+    await setDm(env, p.id, true);
+    return;
+  }
+  if (dm.error_code === 403 || /chat not found/i.test(dm.description || "")) await setDm(env, p.id, false);
+  await mention(env, chatId, p, text);
+}
+
+async function nudge(env, chatId, from, p, text) {
   if (!p || !p.id) return;
   if (p.id !== from.id && spend(env, "nudge", `${from.id}:${p.id}`)) return;
-  await notice(env, chatId, p, text, dmFirst);
+  await notice(env, chatId, p, text);
 }
 
 async function noticeMachine(env, row, text, unknownText) {
@@ -1362,11 +1359,6 @@ async function state(env, chatId, me, admin, section = "laundry") {
     to: r.to_mtype ? { t: r.to_mtype, n: r.to_num } : null,
     at: r.at,
   }));
-  const cutoff = t - PEOPLE_DAYS * 86400;
-  const choices = peopleRows
-    .filter((r) => r.user_id !== me.id && !r.hidden && r.seen_at >= cutoff)
-    .map((r) => ({ id: r.user_id, name: r.name, username: r.username }))
-    .sort((a, b) => a.name.localeCompare(b.name, "ru"));
   const boards = new Set(boardRows.map((r) => r.s));
   return {
     now: t,
@@ -1383,7 +1375,6 @@ async function state(env, chatId, me, admin, section = "laundry") {
     queue,
     bookings,
     moved,
-    people: choices,
     bot: await username(env),
     dm: dmRows[0]?.ok ?? null,
     slots: slots(env),
@@ -1431,7 +1422,7 @@ async function askRoomBooking(env, b) {
     { text: "Нет, отменить бронь", callback_data: `rc:${b.id}` },
   ]);
   if (sent) return;
-  await notice(
+  await mention(
     env,
     b.chat_id,
     person(b),
@@ -1445,7 +1436,7 @@ async function warnRoomBooking(env, b) {
     `Твоя бронь ${ROOM_GEN} начинается в ${clock(env, b.starts)} и держится до ${clock(env, b.ends)}${roomWhy(b)}.`;
   const sent = await roomDm(env, b, text, [{ text: "Не приду — отменить бронь", callback_data: `rc:${b.id}` }]);
   if (sent) return;
-  await notice(env, b.chat_id, person(b), `твоя бронь ${ROOM_GEN} начинается в ${clock(env, b.starts)}.`);
+  await mention(env, b.chat_id, person(b), `твоя бронь ${ROOM_GEN} начинается в ${clock(env, b.starts)}.`);
 }
 
 async function warnRoomJoin(env, j) {
@@ -1487,6 +1478,41 @@ async function remindRoomBookings(env, t) {
   }
 }
 
+function roomInput(env, body, keepStarts = null) {
+  const starts = Number(body.starts);
+  const ends = Number(body.ends);
+  const step = ROOM_STEP_MINUTES * 60;
+  const days = roomDays(env);
+  if (!Number.isInteger(starts) || !Number.isInteger(ends) || starts % step || ends % step) throw new ApiError("Некорректный запрос.");
+  if (starts !== keepStarts && starts < Math.floor(now() / step) * step) return "Это время уже прошло — выбери другое.";
+  if (ends <= starts) return "Конец брони должен быть позже начала.";
+  if (ends <= now()) return "Это время уже прошло — выбери другое.";
+  if (ends - starts > ROOM_MAX_HOURS * 3600) return `Бронь — не дольше ${ROOM_MAX_HOURS} ч.`;
+  if (starts >= days[days.length - 1].end) return `Бронировать можно не дальше чем на ${ROOM_DAYS} дней вперёд.`;
+  const reason = String(body.reason ?? "").replace(/\s+/g, " ").trim().slice(0, ROOM_REASON_LENGTH) || null;
+  const open = body.public === true;
+  const capacity = open ? body.capacity ?? null : null;
+  if (capacity !== null && (!Number.isInteger(capacity) || capacity < 1 || capacity > ROOM_CAPACITY_MAX)) {
+    return `Число людей — от 1 до ${ROOM_CAPACITY_MAX}, или оставь поле пустым, если ограничения нет.`;
+  }
+  return { starts, ends, reason, open, capacity };
+}
+
+async function roomClash(env, chatId, starts, ends, exceptId) {
+  const clash = await first(
+    env,
+    "SELECT * FROM room_bookings WHERE chat_id = ? AND id != ? AND starts < ? AND ends > ? ORDER BY starts LIMIT 1",
+    chatId, exceptId, ends, starts
+  );
+  return clash ? `Это время пересекается с бронью ${clock(env, clash.starts)}–${clock(env, clash.ends)}. Выбери другое.` : null;
+}
+
+function roomSeats(capacity) {
+  return capacity
+    ? `Ждём до ${capacity} чел. — места занимаются по кнопке «Я приду» в приложении.`
+    : "Приходите все желающие, число людей не ограничено! Отметиться «Я приду» можно в приложении.";
+}
+
 async function dropRoomBooking(env, row, byOwner) {
   if (!(await changed(env, "DELETE FROM room_bookings WHERE id = ?", row.id))) return false;
   const joiners = await all(env, "DELETE FROM room_joins WHERE booking_id = ? RETURNING user_id", row.id);
@@ -1514,14 +1540,8 @@ function typeArg(body) {
   return body.t;
 }
 
-async function ownerArg(env, chatId, me, body) {
-  if (body.owner === "unknown") return { owner: UNKNOWN, reporter: me };
-  if (body.owner != null && body.owner !== "me" && Number(body.owner) !== me.id) {
-    const p = await first(env, "SELECT * FROM people WHERE chat_id = ? AND user_id = ?", chatId, Number(body.owner));
-    if (!p) return { error: "Не нашёл этого человека." };
-    return { owner: { id: p.user_id, name: p.name, username: p.username }, reporter: me };
-  }
-  return { owner: me, reporter: null };
+function ownerArg(me, body) {
+  return body.owner === "unknown" ? { owner: UNKNOWN, reporter: me } : { owner: me, reporter: null };
 }
 
 function occupiedText(mtype, num, kind) {
@@ -1542,8 +1562,7 @@ const ACTIONS = {
     const [mtype, num] = machineArg(body);
     const minutes = parseMinutes(body.time ?? "");
     if (minutes === null) return `Не понял время. Введи минуты (45), часы с минутами (1:05) или полтора часа как 1,5 — от 1 до ${MAX_MINUTES} минут.`;
-    const { owner, reporter, error } = await ownerArg(env, chatId, me, body);
-    if (error) return error;
+    const { owner, reporter } = ownerArg(me, body);
     const row = await getMachine(env, chatId, mtype, num);
     if (row && !(REPLACEABLE.has(row.kind) && (row.user_id === owner.id || row.reporter_id === me.id))) {
       return occupiedText(mtype, num, row.kind);
@@ -1556,16 +1575,12 @@ const ACTIONS = {
     const replaces = row ? row.started_at : null;
     if (!(await occupy(env, chatId, mtype, num, owner, t, t + minutes * 60, "run", reporter, replaces))) return `${mname(mtype, num)} уже занята.`;
     await clearOwnerHolds(env, chatId, mtype, num, owner);
-    if (reporter && owner.id) {
-      await nudge(env, chatId, me, owner, `${mname(mtype, num)} отмечена как занятая твоими вещами (отметил: ${await label(env, chatId, me)}). Напомню, когда закончит.`);
-    }
     return null;
   },
 
   async load(env, chatId, me, admin, body) {
     const [mtype, num] = machineArg(body);
-    const { owner, reporter, error } = await ownerArg(env, chatId, me, body);
-    if (error) return error;
+    const { owner, reporter } = ownerArg(me, body);
     const row = await getMachine(env, chatId, mtype, num);
     if (row) {
       if (row.kind === "loaded") return `${mname(mtype, num)} уже отмечена как занятая вещами.`;
@@ -1577,17 +1592,6 @@ const ACTIONS = {
       return `${mname(mtype, num)} уже занята.`;
     }
     await clearOwnerHolds(env, chatId, mtype, num, owner);
-    if (reporter && owner.id) {
-      await nudge(
-        env,
-        chatId,
-        me,
-        owner,
-        `${mname(mtype, num)} отмечена как занятая твоими вещами, программа не запущена (отметил: ${await label(env, chatId, me)}). ` +
-          `Забери вещи или запусти программу в приложении — через ${CLOTHES_HOURS} ч отметка снимется сама.`,
-        true
-      );
-    }
     return null;
   },
 
@@ -1719,15 +1723,16 @@ const ACTIONS = {
       "INSERT INTO moved (chat_id, owner_id, owner_name, owner_username, from_mtype, from_num, to_mtype, to_num, mover_id, mover_name, mover_username, at) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).bind(chatId, ownerP.id, ownerP.name, ownerP.username ?? null, ...src, dest ? dest[0] : null, dest ? dest[1] : null, me.id, me.name, me.username ?? null, now()).run();
-    if (ownerP.id && ownerP.id !== me.id) {
-      const where = dest ? `в ${capitalize(MACHINES[dest[0]].acc)} ${dest[1]}` : "на гладильную доску";
+    const where = dest ? `в ${capitalize(MACHINES[dest[0]].acc)} ${dest[1]}` : "на гладильную доску";
+    if (!ownerP.id) {
+      await say(env, chatId, `Вещи из ${MACHINES[src[0]].gen} ${src[1]} переложили ${where}. Хозяин вещей не отмечен — если это твои вещи, забери их там.`);
+    } else if (ownerP.id !== me.id) {
       await nudge(
         env,
         chatId,
         me,
         ownerP,
-        `твои вещи из ${MACHINES[src[0]].gen} ${src[1]} переложили ${where}. Когда заберёшь, отметь это в приложении.`,
-        true
+        `твои вещи из ${MACHINES[src[0]].gen} ${src[1]} переложили ${where}. Когда заберёшь, отметь это в приложении.`
       );
     }
     await handoff(env, chatId, ...src);
@@ -1758,45 +1763,82 @@ const ACTIONS = {
   },
 
   async room_book(env, chatId, me, admin, body) {
-    const starts = Number(body.starts);
-    const ends = Number(body.ends);
-    const step = ROOM_STEP_MINUTES * 60;
-    const days = roomDays(env);
-    if (!Number.isInteger(starts) || !Number.isInteger(ends) || starts % step || ends % step) throw new ApiError("Некорректный запрос.");
-    if (starts < Math.floor(now() / step) * step) return "Это время уже прошло — выбери другое.";
-    if (ends <= starts) return "Конец брони должен быть позже начала.";
-    if (ends - starts > ROOM_MAX_HOURS * 3600) return `Бронь — не дольше ${ROOM_MAX_HOURS} ч.`;
-    if (starts >= days[days.length - 1].end) return `Бронировать можно не дальше чем на ${ROOM_DAYS} дней вперёд.`;
-    const reason = String(body.reason ?? "").replace(/\s+/g, " ").trim().slice(0, ROOM_REASON_LENGTH);
-    const open = body.public === true;
-    const capacity = open ? body.capacity ?? null : null;
-    if (capacity !== null && (!Number.isInteger(capacity) || capacity < 1 || capacity > ROOM_CAPACITY_MAX)) {
-      return `Число людей — от 1 до ${ROOM_CAPACITY_MAX}, или оставь поле пустым, если ограничения нет.`;
-    }
+    const input = roomInput(env, body);
+    if (typeof input === "string") return input;
+    const { starts, ends, reason, open, capacity } = input;
     const t = now();
     const res = await env.DB.prepare(
       "INSERT INTO room_bookings (chat_id, user_id, user_name, username, starts, ends, reason, created_at, public, capacity) " +
         "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM room_bookings WHERE chat_id = ? AND starts < ? AND ends > ?) " +
         "AND (? OR (SELECT COUNT(*) FROM room_bookings WHERE chat_id = ? AND user_id = ? AND ends > ?) < ?)"
     ).bind(
-      chatId, me.id, me.name, me.username ?? null, starts, ends, reason || null, t, open ? 1 : 0, capacity, chatId, ends, starts,
+      chatId, me.id, me.name, me.username ?? null, starts, ends, reason, t, open ? 1 : 0, capacity, chatId, ends, starts,
       admin ? 1 : 0, chatId, me.id, t, ROOM_USER_BOOKINGS
     ).run();
     if (!res.meta.changes) {
-      const clash = await first(env, "SELECT * FROM room_bookings WHERE chat_id = ? AND starts < ? AND ends > ? ORDER BY starts LIMIT 1", chatId, ends, starts);
-      if (clash) return `Это время пересекается с бронью ${clock(env, clash.starts)}–${clock(env, clash.ends)}. Выбери другое.`;
+      const clash = await roomClash(env, chatId, starts, ends, 0);
+      if (clash) return clash;
       return `Броней ${ROOM_GEN} у тебя уже максимум — ${ROOM_USER_BOOKINGS}. Отмени одну, чтобы забронировать новую.`;
     }
     const who = await plainName(env, chatId, me);
     const span = `${dayLabel(env, starts)}, ${clock(env, starts)}–${clock(env, ends)} — ${who}${reason ? ", " + escape(reason) : ""}`;
-    await roomAnnounce(
-      env,
-      chatId,
-      open
-        ? `Открытое событие в ${ROOM_GEN}: ${span}. ` +
-          (capacity ? `Ждём до ${capacity} чел. — места занимаются по кнопке «Я приду» в приложении.` : "Приходите все желающие, число людей не ограничено! Отметиться «Я приду» можно в приложении.")
-        : `${ROOM_NAME} забронирована: ${span}.`
-    );
+    await roomAnnounce(env, chatId, open ? `Открытое событие в ${ROOM_GEN}: ${span}. ${roomSeats(capacity)}` : `${ROOM_NAME} забронирована: ${span}.`);
+    return null;
+  },
+
+  async room_edit(env, chatId, me, admin, body) {
+    const row = await first(env, "SELECT * FROM room_bookings WHERE id = ? AND chat_id = ?", Number(body.id), chatId);
+    if (!row) return "Эта бронь уже отменена.";
+    if (row.user_id !== me.id) return "Изменить бронь может только тот, кто бронировал.";
+    if (row.ends <= now()) return "Эта бронь уже закончилась.";
+    const input = roomInput(env, body, row.starts);
+    if (typeof input === "string") return input;
+    const { starts, ends, reason, open, capacity } = input;
+    const retimed = starts !== row.starts;
+    const moved = retimed || ends !== row.ends;
+    const t = now();
+    const res = await env.DB.prepare(
+      "UPDATE room_bookings SET starts = ?, ends = ?, reason = ?, public = ?, capacity = ?, " +
+        "created_at = CASE WHEN ? THEN ? ELSE created_at END, asked = CASE WHEN ? THEN 0 ELSE asked END, warned = CASE WHEN ? THEN 0 ELSE warned END " +
+        "WHERE id = ? AND user_id = ? AND starts = ? AND ends = ? " +
+        "AND NOT EXISTS (SELECT 1 FROM room_bookings WHERE chat_id = ? AND id != ? AND starts < ? AND ends > ?) " +
+        "AND (? IS NULL OR (SELECT COUNT(*) FROM room_joins WHERE booking_id = ?) <= ?)"
+    ).bind(
+      starts, ends, reason, open ? 1 : 0, capacity, retimed ? 1 : 0, t, retimed ? 1 : 0, retimed ? 1 : 0,
+      row.id, me.id, row.starts, row.ends, chatId, row.id, ends, starts, capacity, row.id, capacity
+    ).run();
+    if (!res.meta.changes) {
+      const clash = await roomClash(env, chatId, starts, ends, row.id);
+      if (clash) return clash;
+      const going = await first(env, "SELECT COUNT(*) AS n FROM room_joins WHERE booking_id = ?", row.id);
+      if (capacity !== null && going.n > capacity) return `На событие уже записались ${going.n} чел. — меньше мест поставить нельзя.`;
+      return "Бронь только что изменилась — открой её заново.";
+    }
+    const after = { ...row, starts, ends, reason, public: open ? 1 : 0, capacity };
+    const changes = [];
+    if (moved) changes.push(`время: было ${roomSpan(env, row)}, стало ${roomSpan(env, after)}`);
+    if (open && !row.public) changes.push("теперь это открытое событие");
+    if (!open && row.public) changes.push("теперь это закрытая бронь, записи на неё сняты");
+    if (open && row.public && capacity !== (row.capacity ?? null)) changes.push(capacity ? `мест: ${capacity}` : "число людей больше не ограничено");
+    if (reason !== (row.reason ?? null)) changes.push(reason ? `повод: ${escape(reason)}` : "повод убран");
+    if (!changes.length) return null;
+    if (!open && row.public) {
+      const joiners = await all(env, "DELETE FROM room_joins WHERE booking_id = ? RETURNING user_id", row.id);
+      for (const j of joiners) {
+        await roomDm(env, j, `Событие в ${ROOM_GEN}, на которое ты записался, стало закрытой бронью — запись снята: ${roomSpan(env, row)}${roomWhy(row)}.`, []);
+      }
+    } else if (open && row.public && moved) {
+      const joiners = await all(env, "UPDATE room_joins SET warned = CASE WHEN ? THEN 0 ELSE warned END WHERE booking_id = ? RETURNING user_id", retimed ? 1 : 0, row.id);
+      for (const j of joiners) {
+        await roomDm(env, j, `Событие в ${ROOM_GEN}, на которое ты идёшь, перенесено: было ${roomSpan(env, row)}, стало ${roomSpan(env, after)}${roomWhy(after)}.`, [
+          { text: "Не приду", callback_data: `rl:${row.id}` },
+        ]);
+      }
+    }
+    const who = await plainName(env, chatId, me);
+    const head = row.public ? `Событие в ${ROOM_GEN} изменено` : `Бронь ${ROOM_GEN} изменена`;
+    const invite = open && !row.public ? ` ${roomSeats(capacity)}` : "";
+    await roomAnnounce(env, chatId, `${head} — ${who}: ${changes.join("; ")}.${invite}`);
     return null;
   },
 
@@ -1808,11 +1850,14 @@ const ACTIONS = {
     if (row.ends <= now()) return "Это событие уже закончилось.";
     const res = await env.DB.prepare(
       "INSERT OR IGNORE INTO room_joins (booking_id, chat_id, user_id, user_name, username, created_at) " +
-        "SELECT id, chat_id, ?, ?, ?, ? FROM room_bookings r WHERE id = ? " +
+        "SELECT id, chat_id, ?, ?, ?, ? FROM room_bookings r WHERE id = ? AND r.public = 1 " +
         "AND (r.capacity IS NULL OR (SELECT COUNT(*) FROM room_joins j WHERE j.booking_id = r.id) < r.capacity)"
     ).bind(me.id, me.name, me.username ?? null, now(), row.id).run();
     if (res.meta.changes || (await first(env, "SELECT 1 AS ok FROM room_joins WHERE booking_id = ? AND user_id = ?", row.id, me.id))) return null;
-    return `Мест больше нет — на событие уже записались ${row.capacity} чел.`;
+    const latest = await first(env, "SELECT public, capacity FROM room_bookings WHERE id = ?", row.id);
+    if (!latest) return "Это событие уже отменено.";
+    if (!latest.public) return "Это закрытая бронь — на неё не записываются.";
+    return `Мест больше нет — на событие уже записались ${latest.capacity} чел.`;
   },
 
   async room_leave(env, chatId, me, admin, body) {

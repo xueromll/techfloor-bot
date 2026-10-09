@@ -126,6 +126,57 @@ assert one("SELECT COUNT(*) FROM room_joins WHERE booking_id = ?", ev["id"]) == 
 assert any(x["chat_id"] == 4 and "отменено" in x["text"] for x in sent()[before:]), sent()[before:]
 st, d = api(PANYA, {"action": "admin_reset_room"}); assert st == 200, d
 assert one("SELECT COUNT(*) FROM room_joins") == 0, "сброс игровой оставил записи"
+print("--- изменить бронь может только хозяин; пересечения проверяются, своя бронь не мешает")
+ed, PED = fresh("Редактор", start=f"{CH}_p")
+st, d = api(PED, {"action": "room_book", "starts": tom + 10 * 3600, "ends": tom + 11 * 3600, "reason": "Кино"}); assert st == 200, d
+bk = next(x for x in d["room"]["bookings"] if x["mine"])
+def edit(who=None, **kw):
+    return api(who or PED, {"action": "room_edit", "id": bk["id"], "starts": bk["starts"], "ends": bk["ends"], "reason": bk["reason"], "public": bk["public"], "capacity": bk["capacity"], **kw})
+mine = lambda d: next(x for x in d["room"]["bookings"] if x["id"] == bk["id"])
+st, d = api(PANYA, {"action": "room_book", "starts": tom + 12 * 3600, "ends": tom + 13 * 3600}); assert st == 200, d
+st, d = edit(PBORYA, reason="Чужое"); assert "только тот" in err(d), d
+st, d = edit(ends=tom + 13 * 3600); assert "пересекается" in err(d), d
+before = len(sent())
+st, d = edit(starts=tom + 10 * 3600 + 1800, ends=tom + 12 * 3600, reason="Кино и попкорн"); assert st == 200, d
+bk = mine(d); assert (bk["starts"], bk["ends"], bk["reason"]) == (tom + 10 * 3600 + 1800, tom + 12 * 3600, "Кино и попкорн"), bk
+news = [x["text"] for x in sent()[before:]]
+assert any("Бронь игровой изменена" in t and "было" in t and "Кино и попкорн" in t for t in news), news
+print("--- закрытую бронь можно сделать открытой и поменять число мест")
+before = len(sent())
+st, d = edit(public=True, capacity=1); assert st == 200, d
+bk = mine(d); assert bk["public"] and bk["capacity"] == 1, bk
+assert any("теперь это открытое событие" in x["text"] and "Ждём до 1 чел." in x["text"] for x in sent()[before:]), sent()[before:]
+st, d = api(PGALYA, {"action": "room_join", "id": bk["id"]}); assert st == 200, d
+st, d = api(PBORYA, {"action": "room_join", "id": bk["id"]}); assert "Мест больше нет" in err(d), d
+st, d = edit(capacity=None); assert st == 200, d
+bk = mine(d); assert bk["capacity"] is None, bk
+st, d = api(PBORYA, {"action": "room_join", "id": bk["id"]}); assert st == 200, d
+st, d = edit(capacity=1); assert "меньше мест поставить нельзя" in err(d), d
+st, d = api(PED); assert mine(d)["capacity"] is None, mine(d)
+print("--- перенос события пишет записавшимся и заново включает им напоминание")
+sql("UPDATE room_joins SET warned = 1 WHERE booking_id = ?", bk["id"])
+before = len(sent())
+st, d = edit(starts=tom + 14 * 3600, ends=tom + 15 * 3600); assert st == 200, d
+bk = mine(d); assert len(bk["going"]) == 2, bk
+assert one("SELECT SUM(warned) FROM room_joins WHERE booking_id = ?", bk["id"]) == 0
+assert any(x["chat_id"] == 4 and "перенесено" in x["text"] for x in sent()[before:]), sent()[before:]
+print("--- открытое событие можно сделать закрытым: записи снимаются, записавшимся приходит сообщение")
+before = len(sent())
+st, d = edit(public=False); assert st == 200, d
+bk = mine(d); assert not bk["public"] and bk["going"] == [], bk
+assert one("SELECT COUNT(*) FROM room_joins WHERE booking_id = ?", bk["id"]) == 0
+assert any(x["chat_id"] == 2 and "закрытой бронью" in x["text"] for x in sent()[before:]), sent()[before:]
+st, d = api(PGALYA, {"action": "room_join", "id": bk["id"]}); assert "закрытая" in err(d), d
+print("--- у идущей брони можно продлить конец, а начало в прошлое не перенести; правка без изменений ничего не пишет")
+ed2, PED2 = fresh("Редактор-2", start=f"{CH}_p")
+st, d = api(PED2, {"action": "room_book", "starts": cur, "ends": cur + s}); assert st == 200, d
+bk = next(x for x in d["room"]["bookings"] if x["mine"])
+st, d = edit(PED2, ends=cur + 2 * s); assert st == 200 and mine(d)["ends"] == cur + 2 * s, d
+bk = mine(d)
+st, d = edit(PED2, starts=cur - s); assert "прошло" in err(d), d
+before = len(sent())
+st, d = edit(PED2); assert st == 200, d
+assert not any("изменен" in x.get("text", "") for x in sent()[before:]), sent()[before:]
 print("--- /unpin убирает закреп только из своей темы, /unpin all — отовсюду")
 topic("/unpin", 5)
 assert rows("SELECT thread_id FROM pboards WHERE chat_id = ?", CH) == [(77,)]

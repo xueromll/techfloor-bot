@@ -300,14 +300,8 @@ function openMachine(m) {
     const pickOwner = m.status === "free" || m.status === "loaded";
     const owner = el("select", {},
       el("option", { value: "me" }, "Мои"),
-      pickOwner ? [
-        S.people.map((p) => el("option", { value: p.id }, who(p))),
-        el("option", { value: "unknown" }, "Не знаю чьи"),
-      ] : null);
-    if (m.status === "loaded") {
-      if (m.owner.id === 0) owner.value = "unknown";
-      else if (!mine && S.people.some((p) => p.id === m.owner.id)) owner.value = String(m.owner.id);
-    }
+      pickOwner ? el("option", { value: "unknown" }, "Не знаю чьи") : null);
+    if (m.status === "loaded" && m.owner.id === 0) owner.value = "unknown";
     const maxHours = Math.floor(S.maxMinutes / 60);
     const hours = el("input", { type: "number", inputmode: "numeric", min: 0, max: maxHours, step: 1, value: 0 });
     const mins = el("input", { type: "number", inputmode: "numeric", min: 0, max: 59, step: 1, value: 0 });
@@ -471,8 +465,8 @@ function privacyCard() {
     el("label", { class: "toggle" }, box, el("span", { style: "color:var(--text);font-size:15px" }, "Не показывать моё имя")),
     el("p", { class: "hint", style: "margin:8px 0 0" },
       S.me.hidden
-        ? "Включено: везде вместо твоего имени — «Аноним» (у тебя видно «Аноним (это ты)»). Админы чата видят имя. Уведомления приходят в личку после команды /start в чате с ботом."
-        : "Другие увидят «Аноним» вместо твоего имени. Уведомления будут приходить в личку — для этого один раз напиши боту /start."));
+        ? "Включено: везде вместо твоего имени — «Аноним» (у тебя видно «Аноним (это ты)»). Админы чата видят имя."
+        : "Другие увидят «Аноним» вместо твоего имени."));
 }
 
 function movedCard() {
@@ -519,6 +513,7 @@ function roomActs(b) {
         ? el("button", { class: "btn small", disabled: "disabled" }, "Мест нет")
         : el("button", { class: "btn small", onclick: () => act({ action: "room_join", id: b.id }) }, "Я приду"));
   }
+  if (b.mine && b.ends > now()) acts.push(el("button", { class: "btn small secondary", onclick: () => openRoomBook(roomDayOf(b.starts), b) }, "Изменить"));
   if (b.mine || S.me.admin) acts.push(el("button", { class: "btn small secondary", onclick: () => act({ action: "room_cancel", id: b.id }) }, "Отменить"));
   return acts.length ? el("div", { class: "acts" }, acts) : null;
 }
@@ -609,16 +604,20 @@ function dayCard() {
     free.length ? btn("Забронировать", () => openRoomBook(d)) : null);
 }
 
-function openRoomBook(d) {
+function openRoomBook(d, edit = null) {
   const s = step();
-  const taken = (ts) => R().bookings.some((b) => b.starts <= ts && b.ends > ts);
+  const others = R().bookings.filter((b) => !edit || b.id !== edit.id);
+  const taken = (ts) => others.some((b) => b.starts <= ts && b.ends > ts);
   const starts = [];
-  for (let ts = Math.max(d.start, Math.floor(now() / s) * s); ts < d.end; ts += s) if (!taken(ts)) starts.push(ts);
+  const first = Math.max(d.start, Math.floor(now() / s) * s);
+  if (edit && edit.starts < first) starts.push(edit.starts);
+  for (let ts = first; ts < d.end; ts += s) if (!taken(ts)) starts.push(ts);
   const startSel = el("select", {}, starts.map((ts) => el("option", { value: ts }, clock(ts))));
+  if (edit) startSel.value = String(edit.starts);
   const endSel = el("select", {});
   const fillEnds = () => {
     const st = Number(startSel.value);
-    const limit = Math.min(st + R().maxHours * 3600, ...R().bookings.filter((b) => b.starts > st).map((b) => b.starts));
+    const limit = Math.min(st + R().maxHours * 3600, ...others.filter((b) => b.starts > st).map((b) => b.starts));
     const opts = [];
     for (let ts = st + s; ts <= limit; ts += s) opts.push(el("option", { value: ts }, ts >= d.end ? `${clock(ts)} (след. день)` : clock(ts)));
     endSel.replaceChildren(...opts);
@@ -626,10 +625,14 @@ function openRoomBook(d) {
   };
   startSel.addEventListener("change", fillEnds);
   fillEnds();
+  if (edit && [...endSel.options].some((o) => o.value === String(edit.ends))) endSel.value = String(edit.ends);
   const reason = el("input", { type: "text", maxlength: R().reasonLength, placeholder: "Например: настолки, день рождения", style: "font-size:16px;text-align:left" });
+  if (edit) reason.value = edit.reason;
   const open = el("input", { type: "checkbox" });
+  open.checked = !!(edit && edit.public);
   const openHint = el("p", { class: "hint", style: "margin:6px 0 0" });
   const capacity = el("input", { type: "number", inputmode: "numeric", min: 1, max: R().capacityMax, step: 1, placeholder: "Без ограничения", style: "font-size:16px;text-align:left" });
+  if (edit && edit.capacity !== null) capacity.value = String(edit.capacity);
   const capacityBox = el("div", {},
     el("label", { style: "margin-top:10px" }, "Сколько людей ждёшь"),
     capacity,
@@ -642,7 +645,7 @@ function openRoomBook(d) {
   };
   open.addEventListener("change", showOpen);
   showOpen();
-  const title = `${R().name}: ${dayTitle(d)}`;
+  const title = edit ? `Изменить бронь: ${dayTitle(d)}` : `${R().name}: ${dayTitle(d)}`;
   const form = [
     el("label", {}, "Начало"), startSel,
     el("label", { style: "margin-top:10px" }, "Конец"), endSel,
@@ -650,7 +653,7 @@ function openRoomBook(d) {
     el("label", { class: "toggle", style: "margin-top:14px" }, open, el("span", { style: "color:var(--text);font-size:15px" }, "Открытое событие — может прийти любой")),
     openHint,
     capacityBox,
-    btn("Забронировать", () => confirmRoomBook()),
+    btn(edit ? "Сохранить" : "Забронировать", () => confirmRoomBook()),
   ];
   const confirmRoomBook = () => {
     if (!startSel.value || !endSel.value) return;
@@ -668,8 +671,12 @@ function openRoomBook(d) {
       line("Зачем", why || "не указано"),
       line("Бронь", open.checked ? "открытое событие — может прийти любой" : "закрытая — игровая просто занята за тобой"),
       open.checked ? line("Ждёшь людей", people === null ? "без ограничения" : `до ${people}`) : null,
-      btn("Да, бронирую", () => act({
-        action: "room_book", starts: Number(startSel.value), ends: Number(endSel.value), reason: why, public: open.checked, capacity: people,
+      edit && edit.public && !open.checked && edit.going.length
+        ? el("p", { class: "hint", style: "margin:10px 0 0" }, `Записавшиеся (${edit.going.length}) будут сняты с события, им придёт сообщение.`)
+        : null,
+      btn(edit ? "Да, сохранить" : "Да, бронирую", () => act({
+        action: edit ? "room_edit" : "room_book", id: edit ? edit.id : undefined,
+        starts: Number(startSel.value), ends: Number(endSel.value), reason: why, public: open.checked, capacity: people,
       })),
       btn("Нет, изменить", () => openSheet(title, form), "secondary"),
     ]);
@@ -709,7 +716,7 @@ function dmCard() {
   const open = () => (tg && tg.openTelegramLink ? tg.openTelegramLink(link) : window.open(link));
   return el("section", { class: "card" },
     el("b", {}, "Включи личные уведомления"),
-    el("p", { class: "hint", style: "margin:6px 0 0" }, "Нажми «Старт» в чате с ботом — тогда он сможет написать тебе лично: если твои вещи переложили или нужно подтвердить бронь игровой."),
+    el("p", { class: "hint", style: "margin:6px 0 0" }, "Нажми «Старт» в чате с ботом — тогда он сможет писать тебе лично: когда стирка заканчивается, подошла твоя очередь или бронь, твои вещи переложили или нужно подтвердить бронь игровой. Без этого напоминания придут в общий чат."),
     btn("Открыть бота", open, "secondary"));
 }
 
