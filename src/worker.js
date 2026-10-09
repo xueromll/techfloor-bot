@@ -809,7 +809,7 @@ async function tick(env, chatId = null) {
     if (b.num && !(await getMachine(env, b.chat_id, b.mtype, b.num))) {
       const row = await offer(env, b.chat_id, b.mtype, b.num, person(b));
       if (row) {
-        await notice(env, b.chat_id, person(b), `время твоей брони: ${mname(b.mtype, b.num)} ждёт тебя до ${clock(env, row.ends_at)}.`);
+        await notice(env, b.chat_id, person(b), `время твоей брони: ${mname(b.mtype, b.num)} ждёт тебя до ${clock(env, row.ends_at)}. Если её уже заняли без бота — займи любую свободную.`);
         continue;
       }
     }
@@ -923,7 +923,8 @@ async function pinnedText(env, chatId) {
     (leftover.length ? `С вещами внутри: ${leftover.join(", ")}.\n` : "") +
     (broken.length ? `Не работают: ${broken.join(", ")}.\n` : "") +
     "\nОткрой приложение, чтобы занять машину, встать в очередь, забронировать, " +
-    "отметить, что внутри лежат чужие вещи без программы, или что переложил чужие вещи."
+    "отметить, что внутри лежат чужие вещи без программы, или что переложил чужие вещи.\n\n" +
+    "Бот — подсказка, а не правило: пользоваться им не обязательно, а бронь и очередь не отменяют машину, которую уже заняли вживую."
   );
 }
 

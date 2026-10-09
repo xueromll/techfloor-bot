@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <title>Техэтаж</title>
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="/telegram-web-app.js"></script>
 <style>
   :root {
     --bg: var(--tg-theme-secondary-bg-color, #f1f1f4);
@@ -106,10 +106,45 @@
 </style>
 </head>
 <body>
-<div id="app"><div class="empty">Загрузка…</div></div>
+<div id="app"><div class="empty" id="boot">Загрузка…</div></div>
 <div id="sheet" hidden></div>
 <script>
+(function () {
+  var started = Date.now();
+  function stuck(reason) {
+    var boot = document.getElementById("boot");
+    if (!boot) return;
+    var w = window.Telegram && window.Telegram.WebApp;
+    var device = (w ? "Telegram " + w.platform + " " + w.version + "; " : "") + navigator.userAgent;
+    boot.removeAttribute("id");
+    boot.innerHTML = "";
+    var lines = [
+      "Приложение не запустилось на этом устройстве.",
+      "Сделай скриншот этого экрана и отправь его боту через /problem — так получится найти причину.",
+      reason,
+      device,
+    ];
+    for (var i = 0; i < lines.length; i++) {
+      var p = document.createElement("p");
+      p.textContent = lines[i];
+      if (i > 1) p.style.cssText = "font-size:12px;word-break:break-word;text-align:left";
+      boot.appendChild(p);
+    }
+  }
+  window.addEventListener("error", function (e) {
+    stuck("Ошибка: " + (e.message || e.error || "неизвестно") + (e.lineno ? " (строка " + e.lineno + ")" : ""));
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    stuck("Ошибка: " + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
+  setTimeout(function () {
+    stuck("Не загрузилось за " + Math.round((Date.now() - started) / 1000) + " сек.");
+  }, 30000);
+})();
+</script>
+<script>
 const tg = window.Telegram && window.Telegram.WebApp;
+const initData = (tg && tg.initData) || new URLSearchParams(location.hash.slice(1)).get("tgWebAppData") || "";
 const app = document.getElementById("app");
 const sheet = document.getElementById("sheet");
 let S = null;
@@ -181,7 +216,7 @@ async function api(path, body) {
   try {
     res = await fetch(path, {
       method: body ? "POST" : "GET",
-      headers: { "Content-Type": "application/json", "X-Init-Data": tg ? tg.initData : "" },
+      headers: { "Content-Type": "application/json", "X-Init-Data": initData },
       body: body ? JSON.stringify(body) : undefined,
       signal: ctrl.signal,
     });
@@ -334,7 +369,7 @@ function openMachine(m) {
     body.push(el("p", { class: "hint" }, m.owner.id ? `Хозяин нашёлся сам (${by}).` : `Чьи вещи — неизвестно (${by}).`));
   }
   if (m.booking && isMe(m.booking.user)) {
-    body.push(el("p", { class: "hint" }, `Это твоя бронь на ${when(m.booking.at)}. В это время машина будет ждать тебя ${S.claim} мин.`));
+    body.push(el("p", { class: "hint" }, `Это твоя бронь на ${when(m.booking.at)}. В это время машина будет ждать тебя ${S.claim} мин. Если её уже заняли без бота — займи любую свободную.`));
     body.push(btn("Отменить бронь", () => act({ action: "unbook", id: m.booking.id }), "secondary"));
   } else if (m.booking && m.status === "free") {
     body.push(el("p", { class: "hint" }, `Забронирована на ${when(m.booking.at)}. Занять можно, только если программа закончится раньше.`));
@@ -452,7 +487,10 @@ function openSlotMachines(t, at) {
   const cfg = S.types[t];
   const free = bookable(t, at);
   const day = at >= S.tomorrow ? "завтра " : "";
-  const body = [el("p", {}, `Какую ${cfg.acc} бронируем на ${day}${clock(at)}? В это время она будет ждать тебя ${S.claim} мин.`)];
+  const body = [
+    el("p", {}, `Какую ${cfg.acc} бронируем на ${day}${clock(at)}? В это время она будет ждать тебя ${S.claim} мин.`),
+    el("p", { class: "hint" }, "Бронь видят только те, кто пользуется ботом, — это договорённость, а не гарантия. Если к твоему приходу машину заняли вживую, она занята: займи другую или встань в очередь."),
+  ];
   if (!free.length) body.push(el("p", { class: "hint" }, "На это время свободных машин нет — выбери другое время."));
   else {
     body.push(el("div", { class: "chips six" }, free.map((m) => el("button", { class: "chip", onclick: () => act({ action: "book", t, at, n: m.n }) }, m.n))));
@@ -477,7 +515,7 @@ function typeCard() {
   if (queue.length) parts.push(el("p", { class: "hint", style: "margin-top:10px" }, "Очередь: " + queue.map(who).join(", ")));
   const books = S.bookings.filter((b) => b.t === t);
   if (books.length) parts.push(el("p", { class: "hint" }, "Брони: " + books.map((b) => `${when(b.at)}${b.n ? " №" + b.n : ""} ${who(b.user)}`).join(", ")));
-  parts.push(el("p", { class: "hint", style: "margin:10px 0 0" }, "Нажми на занятую машину, чтобы забронировать её сразу после программы."));
+  parts.push(el("p", { class: "hint", style: "margin:10px 0 0" }, "Нажми на занятую машину, чтобы забронировать её сразу после программы. Бронь и очередь работают только между теми, кто пользуется ботом: машину, которую уже заняли вживую, они не отменяют."));
   return el("section", { class: "card" }, el("h2", {}, "Очередь и бронь"), parts);
 }
 
@@ -841,8 +879,11 @@ if (tg) {
   tg.ready();
   tg.expand();
 }
-if (!tg || !tg.initData) {
-  app.replaceChildren(el("div", { class: "empty" }, "Открой приложение кнопкой из закреплённого сообщения в чате Telegram."));
+if (!initData) {
+  const why = tg ? `Telegram ${tg.platform} ${tg.version} не передал данные входа` : "Скрипт Telegram не загрузился, данных входа в адресе нет";
+  app.replaceChildren(el("div", { class: "empty" },
+    el("p", {}, "Открой приложение кнопкой из закреплённого сообщения в чате Telegram."),
+    el("p", { style: "font-size:12px;word-break:break-word" }, `${why}. ${navigator.userAgent}`)));
 } else {
   load();
   setInterval(() => { if (S && !document.hidden) render(); }, 30000);
