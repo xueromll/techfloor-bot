@@ -6,6 +6,7 @@ const CLAIM_MINUTES = 10;
 const SLOT_MINUTES = 30;
 const BOOK_DAYS = 2;
 const CLOTHES_HOURS = 12;
+const LOG_DAYS = 90;
 const BOOKING_GAP_MINUTES = 90;
 const ROOM_NAME = "Игровая";
 const ROOM_GEN = "игровой";
@@ -130,6 +131,11 @@ const SCHEMA = [
     chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, until REAL, reason TEXT NOT NULL,
     by_id INTEGER, created_at REAL NOT NULL,
     PRIMARY KEY (chat_id, user_id))`,
+  `CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, at REAL NOT NULL, action TEXT NOT NULL,
+    actor_id INTEGER, actor_name TEXT, actor_username TEXT, mtype TEXT, num INTEGER,
+    owner_id INTEGER, owner_name TEXT, owner_username TEXT, details TEXT)`,
+  `CREATE INDEX IF NOT EXISTS events_chat_at ON events (chat_id, at)`,
 ];
 
 const MIGRATIONS = [
@@ -148,7 +154,7 @@ const MIGRATIONS = [
 ];
 
 const NUMBERS = WALLS.flat();
-const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings", "room_joins", "blocks"];
+const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings", "room_joins", "blocks", "events"];
 const UNKNOWN = { id: 0, name: "неизвестно", username: null };
 
 const LEFTOVER = new Set(["done", "parked", "loaded"]);
@@ -408,6 +414,33 @@ async function username(env) {
     if (me.ok) botUsername = me.result.username;
   }
   return botUsername || "";
+}
+
+async function audit(env, chatId, action, actor, trail = {}) {
+  const owner = trail.owner ?? null;
+  const entry = {
+    chat: chatId, action, actor: actor ? { id: actor.id, name: actor.name, username: actor.username ?? null } : "system",
+    mtype: trail.mtype ?? null, num: trail.num ?? null, owner, ...(trail.details ?? {}),
+  };
+  console.log(JSON.stringify({ event: entry }));
+  try {
+    await env.DB.prepare(
+      "INSERT INTO events (chat_id, at, action, actor_id, actor_name, actor_username, mtype, num, owner_id, owner_name, owner_username, details) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).bind(
+      chatId, now(), action, actor?.id ?? null, actor?.name ?? null, actor?.username ?? null, trail.mtype ?? null, trail.num ?? null,
+      owner?.id ?? null, owner?.name ?? null, owner?.username ?? null, trail.details ? JSON.stringify(trail.details) : null
+    ).run();
+  } catch (e) {
+    console.error("Audit failed", e);
+  }
+}
+
+function machineTrail(row) {
+  return {
+    mtype: row.mtype, num: row.num, owner: row.user_id ? person(row) : null,
+    details: { kind: row.kind, started_at: row.started_at, ends_at: row.ends_at, finished_at: row.finished_at ?? null, reporter: person(row, "reporter") },
+  };
 }
 
 function person(row, prefix = "") {
@@ -693,6 +726,7 @@ async function tick(env, chatId = null) {
       );
       if (!finished) continue;
       dirty.add(row.chat_id);
+      await audit(env, row.chat_id, "finished", null, machineTrail(row));
       await noticeMachine(
         env,
         row,
@@ -708,6 +742,7 @@ async function tick(env, chatId = null) {
     );
     if (!ok) continue;
     dirty.add(row.chat_id);
+    await audit(env, row.chat_id, "expired", null, machineTrail(row));
     if (row.kind === "hold") {
       await notice(env, row.chat_id, person(row), `время вышло — ${mname(row.mtype, row.num)} передана дальше.`);
     } else if (row.kind === "loaded") {
@@ -751,6 +786,7 @@ async function tick(env, chatId = null) {
       env.DB.prepare("DELETE FROM room_bookings WHERE ends < ?").bind(t - 86400),
       env.DB.prepare("DELETE FROM room_joins WHERE booking_id NOT IN (SELECT id FROM room_bookings)"),
       env.DB.prepare("DELETE FROM blocks WHERE until IS NOT NULL AND until < ?").bind(t),
+      env.DB.prepare("DELETE FROM events WHERE at < ?").bind(t - LOG_DAYS * 86400),
     ]);
   }
   await remindRoomBookings(env, t);
@@ -1558,7 +1594,7 @@ function clearOwnerHolds(env, chatId, mtype, num, owner) {
 }
 
 const ACTIONS = {
-  async take(env, chatId, me, admin, body) {
+  async take(env, chatId, me, admin, body, trail) {
     const [mtype, num] = machineArg(body);
     const minutes = parseMinutes(body.time ?? "");
     if (minutes === null) return `Не понял время. Введи минуты (45), часы с минутами (1:05) или полтора часа как 1,5 — от 1 до ${MAX_MINUTES} минут.`;
@@ -1573,13 +1609,15 @@ const ACTIONS = {
       return `${mname(mtype, num)} забронирована на ${clock(env, booked.at)}, а программа закончится позже. Выбери другую машину.`;
     }
     const replaces = row ? row.started_at : null;
+    Object.assign(trail, { mtype, num, owner: owner.id ? owner : null, details: { minutes, replaced: row ? machineTrail(row).details : null } });
     if (!(await occupy(env, chatId, mtype, num, owner, t, t + minutes * 60, "run", reporter, replaces))) return `${mname(mtype, num)} уже занята.`;
     await clearOwnerHolds(env, chatId, mtype, num, owner);
     return null;
   },
 
-  async load(env, chatId, me, admin, body) {
+  async load(env, chatId, me, admin, body, trail) {
     const [mtype, num] = machineArg(body);
+    Object.assign(trail, { mtype, num });
     const row = await getMachine(env, chatId, mtype, num);
     if (row) return row.kind === "loaded" ? `${mname(mtype, num)} уже отмечена как занятая вещами.` : occupiedText(mtype, num, row.kind);
     const t = now();
@@ -1589,10 +1627,11 @@ const ACTIONS = {
     return null;
   },
 
-  async claim(env, chatId, me, admin, body) {
+  async claim(env, chatId, me, admin, body, trail) {
     const [mtype, num] = machineArg(body);
     const row = await getMachine(env, chatId, mtype, num);
     if (!row || row.kind === "hold" || row.user_id) return "У этой машины уже есть хозяин.";
+    Object.assign(trail, machineTrail(row), { owner: me });
     const ok = await changed(
       env,
       "UPDATE machines SET user_id = ?, user_name = ?, username = ? WHERE chat_id = ? AND mtype = ? AND num = ? AND user_id = 0",
@@ -1601,10 +1640,11 @@ const ACTIONS = {
     return ok ? null : "У этой машины уже есть хозяин.";
   },
 
-  async free(env, chatId, me, admin, body) {
+  async free(env, chatId, me, admin, body, trail) {
     const [mtype, num] = machineArg(body);
     const row = await getMachine(env, chatId, mtype, num);
     if (!row) return `${mname(mtype, num)} уже свободна.`;
+    Object.assign(trail, machineTrail(row));
     if (row.user_id !== me.id && row.reporter_id !== me.id && !admin) {
       return "Освободить может хозяин вещей, тот, кто отметил машину, или админ чата.";
     }
@@ -1695,7 +1735,7 @@ const ACTIONS = {
     return null;
   },
 
-  async move(env, chatId, me, admin, body) {
+  async move(env, chatId, me, admin, body, trail) {
     const src = machineArg(body, "f");
     const dest = body.to === "machine" ? machineArg(body, "t") : null;
     const row = await getMachine(env, chatId, ...src);
@@ -1705,6 +1745,10 @@ const ACTIONS = {
       if (await getMachine(env, chatId, ...dest)) return `${mname(...dest)} занята.`;
     }
     const ownerP = person(row);
+    const since = row.kind === "done" ? row.finished_at : row.started_at;
+    Object.assign(trail, machineTrail(row));
+    trail.details.to = dest ? mname(...dest) : "гладильная доска";
+    trail.details.waited_min = since ? Math.round((now() - since) / 60) : null;
     if (dest && !(await occupy(env, chatId, ...dest, ownerP, now(), now() + CLOTHES_HOURS * 3600, "parked", me))) {
       return `${mname(...dest)} занята.`;
     }
@@ -1733,9 +1777,13 @@ const ACTIONS = {
     return null;
   },
 
-  async picked(env, chatId, me, admin, body) {
+  async picked(env, chatId, me, admin, body, trail) {
     const item = await first(env, "SELECT * FROM moved WHERE id = ? AND chat_id = ?", Number(body.id), chatId);
     if (!item) return null;
+    Object.assign(trail, {
+      mtype: item.from_mtype, num: item.from_num, owner: item.owner_id ? person(item, "owner") : null,
+      details: { mover: person(item, "mover"), moved_at: item.at, to: item.to_mtype ? mname(item.to_mtype, item.to_num) : "гладильная доска" },
+    });
     if (me.id !== item.owner_id && me.id !== item.mover_id && !admin) return "Отметить может хозяин вещей, тот, кто их переложил, или админ.";
     await env.DB.prepare("DELETE FROM moved WHERE id = ?").bind(item.id).run();
     if (item.to_mtype) {
@@ -1905,8 +1953,12 @@ async function apiAction(request, env) {
     if (retry) throw new ApiError(`Слишком часто бронируешь и отменяешь — попробуй через ${Math.ceil(retry / 60)} мин.`, 429, retry);
   }
   await tick(env, chatId);
-  const error = await action(env, chatId, { id: me.id, name: me.name, username: me.username }, admin, body);
+  const actor = { id: me.id, name: me.name, username: me.username };
+  const trail = {};
+  const error = await action(env, chatId, actor, admin, body, trail);
   if (error) throw new ApiError(error);
+  const { action: _, ...fields } = body;
+  await audit(env, chatId, body.action, actor, { ...trail, details: { ...fields, ...trail.details, admin } });
   if (announces) spend(env, "room", me.id);
   if (body.action === "privacy") me.hidden = !!body.hidden;
   if (ROOM_ACTIONS.has(body.action)) await updateRoomBoard(env, chatId);
