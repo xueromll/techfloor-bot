@@ -177,6 +177,68 @@ st, d = edit(PED2, starts=cur - s); assert "прошло" in err(d), d
 before = len(sent())
 st, d = edit(PED2); assert st == 200, d
 assert not any("изменен" in x.get("text", "") for x in sent()[before:]), sent()[before:]
+print("--- к закрытой брони просятся, организатор принимает в приложении")
+wipe("room_bookings", "room_joins", "room_requests")
+own, POWN = fresh("Хозяин", start=f"{CH}_p")
+st, d = api(POWN, {"action": "room_book", "starts": tom + 16 * 3600, "ends": tom + 18 * 3600, "reason": "Приставка"}); assert st == 200, d
+cl = next(x for x in d["room"]["bookings"] if x["mine"])
+at = lambda d: next(x for x in d["room"]["bookings"] if x["id"] == cl["id"])
+st, d = api(POWN, {"action": "room_ask", "id": cl["id"]}); assert "твоя" in err(d), d
+before = len(sent())
+st, d = api(PGALYA, {"action": "room_ask", "id": cl["id"], "note": "  Можно   с вами? "}); assert st == 200, d
+assert at(d)["requested"] == "pending" and at(d)["requests"] == [] and not at(d)["joined"], at(d)
+assert any(x["chat_id"] == own and "просится" in x["text"] and "Можно с вами?" in x["text"] for x in sent()[before:]), sent()[before:]
+st, d = api(PGALYA, {"action": "room_ask", "id": cl["id"]}); assert "уже отправлена" in err(d), d
+st, d = api(PGALYA, {"action": "room_join", "id": cl["id"]}); assert "попроситься" in err(d), d
+st, d = api(PBORYA, {"action": "room_ask", "id": cl["id"]}); assert st == 200, d
+st, d = api(POWN); reqs = at(d)["requests"]
+assert [r["name"] for r in reqs] == ["Галя", "Боря"] and reqs[0]["note"] == "Можно с вами?", reqs
+st, d = api(PANYA, {"action": "room_answer", "id": cl["id"], "user": 4, "accept": True}); assert "только тот" in err(d), d
+before = len(sent())
+st, d = api(POWN, {"action": "room_answer", "id": cl["id"], "user": 4, "accept": True}); assert st == 200, d
+assert [p["name"] for p in at(d)["going"]] == ["Галя"] and [r["name"] for r in at(d)["requests"]] == ["Боря"], at(d)
+assert any(x["chat_id"] == 4 and "принял" in x["text"] for x in sent()[before:]), sent()[before:]
+st, d = api(PGALYA); assert at(d)["joined"] and at(d)["requested"] is None, at(d)
+st, d = api(POWN, {"action": "room_answer", "id": cl["id"], "user": 4, "accept": False}); assert "уже ответили" in err(d), d
+print("--- отказ кнопкой в личке; чужой палец не отвечает; после отказа снова не попроситься")
+answer = lambda what, uid, by: update({"callback_query": {"id": "cb2", "data": f"r{what}:{cl['id']}:{uid}", "from": {"id": by, "first_name": "X"}, "message": {"message_id": 501, "chat": {"id": by, "type": "private"}}}})
+answer("a", 2, 2)
+assert one("SELECT status FROM room_requests WHERE booking_id = ? AND user_id = 2", cl["id"]) == "pending", "ответил не хозяин"
+before = len(sent())
+answer("d", 2, own)
+assert one("SELECT status FROM room_requests WHERE booking_id = ? AND user_id = 2", cl["id"]) == "declined"
+assert any(x["chat_id"] == 2 and "отказал" in x["text"] for x in sent()[before:]), sent()[before:]
+st, d = api(PBORYA); assert at(d)["requested"] == "declined" and not at(d)["joined"], at(d)
+st, d = api(PBORYA, {"action": "room_ask", "id": cl["id"]}); assert "отказал" in err(d), d
+print("--- заявку можно отозвать; когда бронь становится открытой, заявки снимаются")
+guest, PGUEST = fresh("Гость", start=f"{CH}_p")
+st, d = api(PGUEST, {"action": "room_ask", "id": cl["id"]}); assert st == 200, d
+st, d = api(PGUEST, {"action": "room_unask", "id": cl["id"]}); assert at(d)["requested"] is None, at(d)
+st, d = api(PGUEST, {"action": "room_ask", "id": cl["id"]}); assert st == 200, d
+before = len(sent())
+st, d = api(POWN, {"action": "room_edit", "id": cl["id"], "starts": cl["starts"], "ends": cl["ends"], "reason": cl["reason"], "public": True, "capacity": None}); assert st == 200, d
+assert one("SELECT COUNT(*) FROM room_requests WHERE booking_id = ?", cl["id"]) == 0
+assert [p["name"] for p in at(d)["going"]] == ["Галя"], at(d)
+assert any(x["chat_id"] == guest and "Я приду" in x["text"] for x in sent()[before:]), sent()[before:]
+st, d = api(PGUEST, {"action": "room_ask", "id": cl["id"]}); assert "открытое событие" in err(d), d
+print("--- отмена закрытой брони пишет принятым и тем, кто ещё ждёт ответа")
+st, d = api(POWN, {"action": "room_book", "starts": tom + 19 * 3600, "ends": tom + 20 * 3600}); assert st == 200, d
+cl = next(x for x in d["room"]["bookings"] if x["mine"] and x["starts"] == tom + 19 * 3600)
+for P in (PGALYA, PGUEST): st, d = api(P, {"action": "room_ask", "id": cl["id"]}); assert st == 200, d
+answer("a", 4, own)
+before = len(sent())
+st, d = api(POWN, {"action": "room_cancel", "id": cl["id"]}); assert st == 200, d
+assert any(x["chat_id"] == 4 and "тебя приняли" in x["text"] for x in sent()[before:]), sent()[before:]
+assert any(x["chat_id"] == guest and "просился" in x["text"] for x in sent()[before:]), sent()[before:]
+assert one("SELECT COUNT(*) FROM room_requests WHERE booking_id = ?", cl["id"]) == 0
+print("--- организатору без лички заявку пишут в тему игровой")
+PVOVA = init(3, "Вова", "vova", start=f"{CH}_p")
+st, d = api(PVOVA, {"action": "room_book", "starts": tom + 21 * 3600, "ends": tom + 22 * 3600}); assert st == 200, d
+cl = next(x for x in d["room"]["bookings"] if x["mine"])
+before = len(sent())
+st, d = api(PGALYA, {"action": "room_ask", "id": cl["id"]}); assert st == 200, d
+assert any(x["chat_id"] == CH and "@vova" in x["text"] and "просится" in x["text"] for x in sent()[before:]), sent()[before:]
+st, d = api(PVOVA, {"action": "room_cancel", "id": cl["id"]}); assert st == 200, d
 print("--- /unpin убирает закреп только из своей темы, /unpin all — отовсюду")
 topic("/unpin", 5)
 assert rows("SELECT thread_id FROM pboards WHERE chat_id = ?", CH) == [(77,)]

@@ -49,6 +49,7 @@ const LIMITS = {
   command: { limit: 5, seconds: 60 },
   tap: { limit: 20, seconds: 60 },
   problem: { limit: 5, seconds: 3600 },
+  ask: { limit: 10, seconds: 3600, scaled: true },
 };
 
 const WALLS = [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11]];
@@ -76,7 +77,8 @@ const ROOM_HELP =
   "• Прачечная — стиралки и сушилки: что свободно, кто занял и сколько осталось, очередь, бронь, " +
   "напоминания и отметки «внутри чужие вещи, программа не запущена» и «переложил чужие вещи».\n" +
   "• Игровая — календарь: свободна ли она сейчас, брони на любой день и бронь своего времени. " +
-  "Бронь может быть открытым событием — тогда любой может нажать «Я приду».\n\n" +
+  "Бронь может быть открытым событием — тогда любой может нажать «Я приду». " +
+  "К закрытой брони можно попроситься — организатор примет или откажет.\n\n" +
   "Как пользоваться: в чате общаги открой тему про стирку или про игровую и нажми кнопку " +
   "в закреплённом сообщении — «Открыть прачечную» или «Открыть игровую».\n\n" +
   "Уведомления: напоминания про стирку и про брони игровой приходят сюда, в личку — " +
@@ -111,7 +113,7 @@ const DESCRIPTION =
 const ROOM_DESCRIPTION =
   "Бот техэтажа общаги.\n\n" +
   "Прачечная: стиралки и сушилки, кто занял и сколько осталось, вещи без программы, очередь, бронь и напоминания.\n" +
-  "Игровая: календарь броней — посмотреть, свободна ли, забронировать время, устроить открытое событие или записаться на чужое.\n\n" +
+  "Игровая: календарь броней — посмотреть, свободна ли, забронировать время, устроить открытое событие, записаться на чужое или попроситься в закрытую бронь.\n\n" +
   "Открывай приложение кнопкой из закреплённых сообщений в чате общаги.";
 
 const SHORT_DESCRIPTION = "Прачечная техэтажа: кто занял стиралку или сушилку, очередь, брони и напоминания.";
@@ -121,7 +123,8 @@ const ROOM_SHORT_DESCRIPTION = "Прачечная и игровая техэт�
 const PLAYROOM_HELP =
   "Привет! Я бот техэтажа общаги.\n\n" +
   "Игровая — календарь: свободна ли она сейчас, брони на любой день и бронь своего времени. " +
-  "Бронь может быть открытым событием — тогда любой может нажать «Я приду».\n\n" +
+  "Бронь может быть открытым событием — тогда любой может нажать «Я приду». " +
+  "К закрытой брони можно попроситься — организатор примет или откажет.\n\n" +
   "Как пользоваться: в чате общаги открой тему про игровую и нажми кнопку «Открыть игровую» " +
   "в закреплённом сообщении.\n\n" +
   "Уведомления: напоминания про брони игровой приходят сюда, в личку — " +
@@ -131,7 +134,7 @@ const PLAYROOM_HELP =
 
 const PLAYROOM_DESCRIPTION =
   "Бот игровой техэтажа общаги.\n\n" +
-  "Календарь броней: посмотреть, свободна ли игровая, забронировать время, устроить открытое событие или записаться на чужое.\n\n" +
+  "Календарь броней: посмотреть, свободна ли игровая, забронировать время, устроить открытое событие, записаться на чужое или попроситься в закрытую бронь.\n\n" +
   "Открывай приложение кнопкой из закреплённого сообщения в чате общаги.";
 
 const PLAYROOM_SHORT_DESCRIPTION = "Игровая техэтажа: календарь броней, открытые события и напоминания.";
@@ -186,6 +189,11 @@ const SCHEMA = [
     user_id INTEGER NOT NULL, user_name TEXT NOT NULL, username TEXT,
     created_at REAL NOT NULL, warned INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (booking_id, user_id))`,
+  `CREATE TABLE IF NOT EXISTS room_requests (
+    booking_id INTEGER NOT NULL, chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL, user_name TEXT NOT NULL, username TEXT, note TEXT,
+    status TEXT NOT NULL DEFAULT 'pending', created_at REAL NOT NULL,
+    PRIMARY KEY (booking_id, user_id))`,
   `CREATE TABLE IF NOT EXISTS blocks (
     chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, until REAL, reason TEXT NOT NULL,
     by_id INTEGER, created_at REAL NOT NULL,
@@ -219,13 +227,13 @@ const MIGRATIONS = [
 ];
 
 const NUMBERS = WALLS.flat();
-const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings", "room_joins", "blocks", "events"];
+const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings", "room_joins", "room_requests", "blocks", "events"];
 const UNKNOWN = { id: 0, name: "неизвестно", username: null };
 
 const LEFTOVER = new Set(["done", "parked", "loaded"]);
 const REPLACEABLE = new Set(["hold", "done", "loaded"]);
-const ROOM_ACTIONS = new Set(["room_book", "room_edit", "room_cancel", "room_join", "room_leave", "admin_reset_room", "privacy"]);
-const PLAYROOM_ONLY = new Set(["room_book", "room_edit", "room_cancel", "room_join", "room_leave", "admin_reset_room"]);
+const ROOM_ACTIONS = new Set(["room_book", "room_edit", "room_cancel", "room_join", "room_leave", "room_ask", "room_unask", "room_answer", "admin_reset_room", "privacy"]);
+const PLAYROOM_ONLY = new Set(["room_book", "room_edit", "room_cancel", "room_join", "room_leave", "room_ask", "room_unask", "room_answer", "admin_reset_room"]);
 const LAUNDRY_ONLY = new Set(["take", "load", "claim", "free", "queue", "unqueue", "next", "unnext", "book", "unbook", "move", "picked", "broken", "fixed", "retime", "admin_reset_laundry"]);
 const ANNOUNCING = new Set(["room_book", "room_edit", "room_cancel"]);
 const UNPINNED = new Set(["dm", "problem"]);
@@ -603,9 +611,9 @@ async function setDm(env, userId, ok) {
   await env.DB.prepare("INSERT OR REPLACE INTO dm (user_id, ok) VALUES (?, ?)").bind(userId, ok ? 1 : 0).run();
 }
 
-async function mention(env, chatId, p, text) {
+async function mention(env, chatId, p, text, table = "boards") {
   const who = (await isHidden(env, chatId, p.id)) ? `<a href="tg://user?id=${p.id}">${ANONYMOUS}</a>` : tag(p);
-  await say(env, chatId, `${who}, ${text}`);
+  await say(env, chatId, `${who}, ${text}`, {}, table);
 }
 
 async function notice(env, chatId, p, text) {
@@ -867,6 +875,7 @@ async function tick(env, chatId = null) {
       env.DB.prepare("DELETE FROM moved WHERE at < ?").bind(t - CLOTHES_HOURS * 3600),
       env.DB.prepare("DELETE FROM room_bookings WHERE ends < ?").bind(t - 86400),
       env.DB.prepare("DELETE FROM room_joins WHERE booking_id NOT IN (SELECT id FROM room_bookings)"),
+      env.DB.prepare("DELETE FROM room_requests WHERE booking_id NOT IN (SELECT id FROM room_bookings)"),
       env.DB.prepare("DELETE FROM blocks WHERE until IS NOT NULL AND until < ?").bind(t),
       env.DB.prepare("DELETE FROM events WHERE at < ?").bind(t - LOG_DAYS * 86400),
     ]);
@@ -1267,6 +1276,7 @@ async function moderate(env, msg, command, thread, by) {
     env.DB.prepare("DELETE FROM bookings WHERE chat_id = ? AND user_id = ?").bind(chatId, target.id),
     env.DB.prepare("DELETE FROM room_bookings WHERE chat_id = ? AND user_id = ? AND starts > ?").bind(chatId, target.id, t),
     env.DB.prepare("DELETE FROM room_joins WHERE chat_id = ? AND user_id = ?").bind(chatId, target.id),
+    env.DB.prepare("DELETE FROM room_requests WHERE chat_id = ? AND user_id = ?").bind(chatId, target.id),
   ]);
   cacheSet(blockCache, `${chatId}:${target.id}`, { until, reason: "admin" }, BLOCK_CACHE_MAX);
   const rooms = playroom(env) ? out[4].meta.changes : 0;
@@ -1281,7 +1291,7 @@ async function moderate(env, msg, command, thread, by) {
 
 async function onCallback(env, cq) {
   if (!cq.from || spend(env, "tap", cq.from.id)) return;
-  const parsed = String(cq.data || "").match(/^r([kcl]):(\d+)$/);
+  const parsed = String(cq.data || "").match(/^r([kcl]):(\d+)$|^r([ad]):(\d+):(\d+)$/);
   const answer = (text) => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
   const rewrite = (text) =>
     cq.message
@@ -1289,6 +1299,27 @@ async function onCallback(env, cq) {
       : null;
   if (!parsed || !playroom(env)) {
     await answer();
+    return;
+  }
+  if (parsed[3]) {
+    const row = await first(env, "SELECT * FROM room_bookings WHERE id = ?", Number(parsed[4]));
+    if (!row || row.user_id !== cq.from.id) {
+      await answer("Этой брони больше нет.");
+      await rewrite(`Бронь ${ROOM_GEN} уже отменена — заявка больше не нужна.`);
+      return;
+    }
+    const accept = parsed[3] === "a";
+    const { error, guest } = await answerRoomRequest(env, row, Number(parsed[5]), accept);
+    if (error) {
+      await answer(error);
+      await rewrite(`${error} Бронь: ${roomSpan(env, row)}${roomWhy(row)}.`);
+      return;
+    }
+    await answer(accept ? "Заявка принята." : "Заявка отклонена.");
+    await rewrite(accept
+      ? `${tag(guest)} придёт на твою бронь ${ROOM_GEN}: ${roomSpan(env, row)}${roomWhy(row)}. Я написал, что ты согласился.`
+      : `Ты отказал ${tag(guest)}: ${roomSpan(env, row)}${roomWhy(row)}. Я написал об этом.`);
+    await updateRoomBoard(env, row.chat_id);
     return;
   }
   const row = await first(env, "SELECT * FROM room_bookings WHERE id = ?", Number(parsed[2]));
@@ -1525,9 +1556,10 @@ async function authorize(request, env, bucket) {
   return { chatId, me, admin, section };
 }
 
-function roomState(days, rows, joins, view, meId) {
+function roomState(days, rows, joins, requests, view, meId) {
   return {
     name: ROOM_NAME,
+    gen: ROOM_GEN,
     step: ROOM_STEP_MINUTES,
     maxHours: ROOM_MAX_HOURS,
     reasonLength: ROOM_REASON_LENGTH,
@@ -1544,6 +1576,10 @@ function roomState(days, rows, joins, view, meId) {
       capacity: r.public ? r.capacity ?? null : null,
       going: joins.filter((j) => j.booking_id === r.id).map((j) => view(person(j))),
       joined: joins.some((j) => j.booking_id === r.id && j.user_id === meId),
+      requested: requests.find((x) => x.booking_id === r.id && x.user_id === meId)?.status ?? null,
+      requests: r.user_id === meId
+        ? requests.filter((x) => x.booking_id === r.id && x.status === "pending").map((x) => ({ ...person(x), note: x.note || "" }))
+        : [],
     })),
   };
 }
@@ -1552,7 +1588,7 @@ async function state(env, chatId, me, admin, section = "laundry") {
   const t = now();
   const rooms = playroom(env);
   const days = rooms ? roomDays(env) : [];
-  const [peopleRows, machineRows, nextRows, bookingRows, queueRows, movedRows, dmRows, boardRows, roomRows = [], joinRows = []] = await batch(
+  const [peopleRows, machineRows, nextRows, bookingRows, queueRows, movedRows, dmRows, boardRows, roomRows = [], joinRows = [], requestRows = []] = await batch(
     env,
     q(env, "SELECT * FROM people WHERE chat_id = ?", chatId),
     q(env, "SELECT * FROM machines WHERE chat_id = ?", chatId),
@@ -1571,6 +1607,10 @@ async function state(env, chatId, me, admin, section = "laundry") {
             "SELECT j.* FROM room_joins j JOIN room_bookings r ON r.id = j.booking_id " +
               "WHERE r.chat_id = ? AND r.ends > ? AND r.starts < ? ORDER BY j.created_at",
             chatId, days[0].start, days[days.length - 1].end),
+          q(env,
+            "SELECT x.* FROM room_requests x JOIN room_bookings r ON r.id = x.booking_id " +
+              "WHERE r.chat_id = ? AND r.ends > ? AND (x.user_id = ? OR r.user_id = ?) ORDER BY x.created_at",
+            chatId, days[0].start, me.id, me.id),
         ]
       : [])
   );
@@ -1649,7 +1689,7 @@ async function state(env, chatId, me, admin, section = "laundry") {
     section,
     laundry: laundry(env),
     sections: { laundry: laundry(env) && boards.has("laundry"), playroom: rooms && boards.has("playroom") },
-    room: rooms ? roomState(days, roomRows, joinRows, view, me.id) : null,
+    room: rooms ? roomState(days, roomRows, joinRows, requestRows, view, me.id) : null,
     problems: Number(env.OWNER_ID) ? { kinds: PROBLEM_KINDS, length: PROBLEM_LENGTH } : null,
   };
 }
@@ -1708,7 +1748,8 @@ async function warnRoomBooking(env, b) {
 }
 
 async function warnRoomJoin(env, j) {
-  const text = `Событие в ${ROOM_GEN}, на которое ты идёшь, начинается в ${clock(env, j.starts)} и идёт до ${clock(env, j.ends)}${roomWhy(j)}.`;
+  const head = j.public ? `Событие в ${ROOM_GEN}, на которое ты идёшь,` : `Бронь ${ROOM_GEN}, на которую тебя приняли,`;
+  const text = `${head} начинается в ${clock(env, j.starts)} и идёт до ${clock(env, j.ends)}${roomWhy(j)}.`;
   await roomDm(env, { user_id: j.joiner }, text, [{ text: "Не приду", callback_data: `rl:${j.id}` }]);
 }
 
@@ -1784,16 +1825,57 @@ function roomSeats(capacity) {
 async function dropRoomBooking(env, row, byOwner) {
   if (!(await changed(env, "DELETE FROM room_bookings WHERE id = ?", row.id))) return false;
   const joiners = await all(env, "DELETE FROM room_joins WHERE booking_id = ? RETURNING user_id", row.id);
+  const askers = await all(env, "DELETE FROM room_requests WHERE booking_id = ? RETURNING user_id, status", row.id);
   const by = byOwner ? "" : " (отменено админом)";
   await roomAnnounce(
     env,
     row.chat_id,
     row.public ? `Событие в ${ROOM_GEN} отменено: ${roomSpan(env, row)}${roomWhy(row)}${by}.` : `Бронь ${ROOM_GEN} отменена: ${roomSpan(env, row)}${by}.`
   );
-  for (const j of joiners) {
-    await roomDm(env, j, `Событие в ${ROOM_GEN}, на которое ты идёшь, отменено: ${roomSpan(env, row)}${roomWhy(row)}${by}.`, []);
+  const head = row.public ? `Событие в ${ROOM_GEN}, на которое ты идёшь, отменено` : `Бронь ${ROOM_GEN}, на которую тебя приняли, отменена`;
+  for (const j of joiners) await roomDm(env, j, `${head}: ${roomSpan(env, row)}${roomWhy(row)}${by}.`, []);
+  for (const a of askers.filter((a) => a.status === "pending")) {
+    await roomDm(env, a, `Бронь ${ROOM_GEN}, к которой ты просился, отменена — заявка больше не нужна: ${roomSpan(env, row)}${roomWhy(row)}${by}.`, []);
   }
   return true;
+}
+
+async function askRoomOwner(env, row, guest, note) {
+  const text =
+    `${tag(guest)} просится к тебе на бронь ${ROOM_GEN}: ${roomSpan(env, row)}${roomWhy(row)}.` +
+    (note ? `\n\nСообщение: «${escape(note)}»` : "") +
+    "\n\nПринять или отказать? Ответ придёт ему в личку.";
+  const sent = await roomDm(env, row, text, [
+    { text: "Принять", callback_data: `ra:${row.id}:${guest.id}` },
+    { text: "Отказать", callback_data: `rd:${row.id}:${guest.id}` },
+  ]);
+  if (sent) return;
+  await mention(
+    env,
+    row.chat_id,
+    person(row),
+    `${await plainName(env, row.chat_id, guest)} просится к тебе на бронь ${ROOM_GEN} ${roomSpan(env, row)}. Принять или отказать можно в приложении.`,
+    "pboards"
+  );
+}
+
+async function answerRoomRequest(env, row, userId, accept) {
+  if (row.ends <= now()) return { error: "Эта бронь уже закончилась." };
+  const [req] = accept
+    ? await all(env, "DELETE FROM room_requests WHERE booking_id = ? AND user_id = ? AND status = 'pending' RETURNING *", row.id, userId)
+    : await all(env, "UPDATE room_requests SET status = 'declined' WHERE booking_id = ? AND user_id = ? AND status = 'pending' RETURNING *", row.id, userId);
+  if (!req) return { error: "Эту заявку уже отозвали или на неё уже ответили." };
+  if (accept) {
+    await q(env, "INSERT OR IGNORE INTO room_joins (booking_id, chat_id, user_id, user_name, username, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      row.id, row.chat_id, req.user_id, req.user_name, req.username, now()).run();
+    const remind = row.starts - now() > ROOM_SOON_MINUTES * 60 ? " — я напомню за полчаса до начала" : "";
+    await roomDm(env, req, `Организатор принял твою заявку на бронь ${ROOM_GEN}: ${roomSpan(env, row)}${roomWhy(row)}. Ты в списке${remind}.`, [
+      { text: "Не приду", callback_data: `rl:${row.id}` },
+    ]);
+  } else {
+    await roomDm(env, req, `Организатор отказал в заявке на бронь ${ROOM_GEN}: ${roomSpan(env, row)}${roomWhy(row)}.`, []);
+  }
+  return { guest: person(req) };
 }
 
 function machineArg(body, prefix = "") {
@@ -2232,12 +2314,19 @@ const ACTIONS = {
       for (const j of joiners) {
         await roomDm(env, j, `Событие в ${ROOM_GEN}, на которое ты записался, стало закрытой бронью — запись снята: ${roomSpan(env, row)}${roomWhy(row)}.`, []);
       }
-    } else if (open && row.public && moved) {
+    } else if (moved) {
       const joiners = await all(env, "UPDATE room_joins SET warned = CASE WHEN ? THEN 0 ELSE warned END WHERE booking_id = ? RETURNING user_id", retimed ? 1 : 0, row.id);
       for (const j of joiners) {
-        await roomDm(env, j, `Событие в ${ROOM_GEN}, на которое ты идёшь, перенесено: было ${roomSpan(env, row)}, стало ${roomSpan(env, after)}${roomWhy(after)}.`, [
+        const head = row.public ? `Событие в ${ROOM_GEN}, на которое ты идёшь, перенесено` : `Бронь ${ROOM_GEN}, на которую тебя приняли, перенесена`;
+        await roomDm(env, j, `${head}: было ${roomSpan(env, row)}, стало ${roomSpan(env, after)}${roomWhy(after)}.`, [
           { text: "Не приду", callback_data: `rl:${row.id}` },
         ]);
+      }
+    }
+    if (open && !row.public) {
+      const askers = await all(env, "DELETE FROM room_requests WHERE booking_id = ? RETURNING user_id, status", row.id);
+      for (const a of askers.filter((a) => a.status === "pending")) {
+        await roomDm(env, a, `Бронь ${ROOM_GEN}, к которой ты просился, стала открытым событием — просто нажми «Я приду» в приложении: ${roomSpan(env, after)}${roomWhy(after)}.`, []);
       }
     }
     const who = await plainName(env, chatId, me);
@@ -2251,7 +2340,7 @@ const ACTIONS = {
     const row = await first(env, "SELECT * FROM room_bookings WHERE id = ? AND chat_id = ?", Number(body.id), chatId);
     if (!row) return "Это событие уже отменено.";
     if (row.user_id === me.id) return "Это твоё событие — ты и так в нём.";
-    if (!row.public) return "Это закрытая бронь — на неё не записываются.";
+    if (!row.public) return "Это закрытая бронь — на неё не записываются, но можно попроситься у организатора.";
     if (row.ends <= now()) return "Это событие уже закончилось.";
     const res = await env.DB.prepare(
       "INSERT OR IGNORE INTO room_joins (booking_id, chat_id, user_id, user_name, username, created_at) " +
@@ -2261,13 +2350,52 @@ const ACTIONS = {
     if (res.meta.changes || (await first(env, "SELECT 1 AS ok FROM room_joins WHERE booking_id = ? AND user_id = ?", row.id, me.id))) return null;
     const latest = await first(env, "SELECT public, capacity FROM room_bookings WHERE id = ?", row.id);
     if (!latest) return "Это событие уже отменено.";
-    if (!latest.public) return "Это закрытая бронь — на неё не записываются.";
+    if (!latest.public) return "Это закрытая бронь — на неё не записываются, но можно попроситься у организатора.";
     return `Мест больше нет — на событие уже записались ${latest.capacity} чел.`;
   },
 
   async room_leave(env, chatId, me, admin, body) {
     await env.DB.prepare("DELETE FROM room_joins WHERE booking_id = ? AND chat_id = ? AND user_id = ?").bind(Number(body.id), chatId, me.id).run();
     return null;
+  },
+
+  async room_ask(env, chatId, me, admin, body) {
+    const row = await first(env, "SELECT * FROM room_bookings WHERE id = ? AND chat_id = ?", Number(body.id), chatId);
+    if (!row) return "Эта бронь уже отменена.";
+    if (row.user_id === me.id) return "Это твоя бронь.";
+    if (row.public) return "Это открытое событие — просто нажми «Я приду».";
+    if (row.ends <= now()) return "Эта бронь уже закончилась.";
+    if (await first(env, "SELECT 1 AS ok FROM room_joins WHERE booking_id = ? AND user_id = ?", row.id, me.id)) return "Ты уже в списке на эту бронь.";
+    const retry = full(env, "ask", me.id);
+    if (retry) return `Слишком много заявок — попробуй через ${Math.ceil(retry / 60)} мин.`;
+    const note = String(body.note ?? "").replace(/\s+/g, " ").trim().slice(0, ROOM_REASON_LENGTH) || null;
+    const res = await env.DB.prepare(
+      "INSERT OR IGNORE INTO room_requests (booking_id, chat_id, user_id, user_name, username, note, created_at) " +
+        "SELECT id, chat_id, ?, ?, ?, ?, ? FROM room_bookings WHERE id = ? AND public = 0"
+    ).bind(me.id, me.name, me.username ?? null, note, now(), row.id).run();
+    if (!res.meta.changes) {
+      const old = await first(env, "SELECT status FROM room_requests WHERE booking_id = ? AND user_id = ?", row.id, me.id);
+      if (!old) return "Эта бронь только что изменилась — открой её заново.";
+      return old.status === "declined" ? "Организатор уже отказал тебе в этой брони." : "Заявка уже отправлена — ждём ответа организатора.";
+    }
+    spend(env, "ask", me.id);
+    await askRoomOwner(env, row, me, note);
+    return null;
+  },
+
+  async room_unask(env, chatId, me, admin, body) {
+    await env.DB.prepare("DELETE FROM room_requests WHERE booking_id = ? AND chat_id = ? AND user_id = ? AND status = 'pending'")
+      .bind(Number(body.id), chatId, me.id).run();
+    return null;
+  },
+
+  async room_answer(env, chatId, me, admin, body, trail) {
+    const row = await first(env, "SELECT * FROM room_bookings WHERE id = ? AND chat_id = ?", Number(body.id), chatId);
+    if (!row) return "Эта бронь уже отменена.";
+    if (row.user_id !== me.id) return "Отвечать на заявки может только тот, кто бронировал.";
+    const { error, guest } = await answerRoomRequest(env, row, Number(body.user), body.accept === true);
+    if (guest) trail.owner = guest;
+    return error ?? null;
   },
 
   async admin_reset_laundry(env, chatId, me, admin, body) {
@@ -2286,6 +2414,7 @@ const ACTIONS = {
     const t = now();
     await env.DB.batch([
       env.DB.prepare("DELETE FROM room_joins WHERE booking_id IN (SELECT id FROM room_bookings WHERE chat_id = ? AND ends > ?)").bind(chatId, t),
+      env.DB.prepare("DELETE FROM room_requests WHERE booking_id IN (SELECT id FROM room_bookings WHERE chat_id = ? AND ends > ?)").bind(chatId, t),
       env.DB.prepare("DELETE FROM room_bookings WHERE chat_id = ? AND ends > ?").bind(chatId, t),
     ]);
     await roomAnnounce(env, chatId, "Админ отменил все брони игровой.");

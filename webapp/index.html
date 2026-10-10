@@ -627,7 +627,7 @@ function typeCard() {
 
 const GUIDES = {
   laundry: { pitch: "Покажу за полминуты, как отметить свою стирку и получить сообщение, когда она закончится.", open: () => openGuide() },
-  playroom: { pitch: "Покажу за полминуты, как забронировать время или прийти на чужое событие.", open: () => openRoomGuide() },
+  playroom: { pitch: "Покажу за полминуты, как забронировать время, прийти на чужое событие или попроситься в чужую бронь.", open: () => openRoomGuide() },
 };
 const guideSeen = {};
 for (const kind of Object.keys(GUIDES)) {
@@ -734,7 +734,7 @@ function openRoomGuide() {
     guideStep(3, "Выбери время и тип брони", `Шаг — ${R().step} мин, одна бронь — до ${R().maxHours} ч.`, [
       el("div", { class: "pair" }, demoField("Начало", "19:00"), demoField("Конец", "21:00")),
       el("div", { class: "toggle", style: "margin-top:10px" }, el("input", { type: "checkbox", checked: "checked", tabindex: "-1" }), el("span", {}, "Открытое событие — может прийти любой")),
-      el("p", { class: "hint", style: "margin:6px 0 0" }, `Закрытая — ${roomLow} просто занята за тобой. Открытая — в чате позовут всех, и любой сможет записаться.`)]),
+      el("p", { class: "hint", style: "margin:6px 0 0" }, `Закрытая — ${roomLow} занята за тобой, другие могут только попроситься к тебе. Открытая — в чате позовут всех, и любой сможет записаться.`)]),
     guideStep(4, "Накануне бот спросит, нужна ли ещё бронь", (dmHint() ? dmHint() + " " : "") + "Если планы изменились — отмени, чтобы время досталось другим. Перед началом бот напомнит ещё раз.", [
       guideBubble(`Напоминание: ${room} забронирована за тобой на завтра — 19:00–21:00, настолки. Бронь ещё нужна?`),
       el("div", { class: "chips two", style: "margin-top:6px" }, el("div", { class: "chip" }, "Да, бронь нужна"), el("div", { class: "chip" }, "Нет, отменить бронь"))]),
@@ -742,14 +742,23 @@ function openRoomGuide() {
       el("div", { class: "row" },
         el("div", {}, el("b", {}, "Суббота, 19:00–22:00"), el("div", { class: "hint" }, "Дима — турнир по мафии"), el("div", { class: "hint" }, "Идут 3 из 10")),
         el("div", { class: "btn small" }, "Я приду"))),
-    guidePrivacy(6, "Когда бронируешь,", el("div", { class: "toggle" }, el("input", { type: "checkbox", tabindex: "-1" }), el("span", {}, "Открытое событие — может прийти любой")), "busy", `Сейчас занята до 21:00: Аноним — настолки.`),
+    guideStep(6, "Хочешь в чужую закрытую бронь — нажми «Попроситься»",
+      (dmHint() ? dmHint() + " " : "") + "Можно добавить сообщение. Организатор получит заявку и решит, принять или отказать, — ответ придёт тебе в личку и будет виден в приложении. Если примет, ты в списке, и бот напомнит перед началом. Передумал — «Отозвать заявку».",
+      el("div", { class: "row" },
+        el("div", {}, el("div", {}, el("b", {}, "20:00–23:00"), roomBadge({ public: false })), el("div", { class: "hint" }, "Аня — приставка")),
+        el("div", { class: "btn small" }, "Попроситься"))),
+    guideStep(7, "Просятся к тебе — прими или откажи",
+      "Бот пришлёт заявку в личку с кнопками, а в приложении она появится в блоке «Просятся к тебе». Кого примешь — тот станет гостем твоей брони. Без твоего согласия на закрытую бронь никто не попадёт.", [
+        guideBubble(`Дима просится к тебе на бронь ${R().gen}: пт, 16 октября, 20:00–23:00 — приставка. Сообщение: «Можно с вами?»`),
+        el("div", { class: "chips two", style: "margin-top:6px" }, el("div", { class: "chip" }, "Принять"), el("div", { class: "chip" }, "Отказать"))]),
+    guidePrivacy(8, "Когда бронируешь,", el("div", { class: "toggle" }, el("input", { type: "checkbox", tabindex: "-1" }), el("span", {}, "Открытое событие — может прийти любой")), "busy", `Сейчас занята до 21:00: Аноним — настолки.`),
     el("h2", { style: "margin:20px 0 4px" }, "Что значат метки"),
     el("div", { class: "demo legend-rows" }, [
       legendMark(el("div", { class: "day has" }, 15), "Жёлтая точка — в этот день есть брони."),
       legendMark(el("div", { class: "day has open" }, 18), "Зелёная точка — в этот день открытое событие, прийти может любой."),
       legendMark(el("div", { class: "day sel" }, 16), "Выбранный день — его брони показаны ниже календаря."),
       legendMark(roomBadge({ public: true }), "Открытое событие — можно записаться кнопкой «Я приду»."),
-      legendMark(roomBadge({ public: false }), `Закрытая бронь — ${roomLow} занята за этим человеком.`),
+      legendMark(roomBadge({ public: false }), `Закрытая бронь — ${roomLow} занята за этим человеком. Прийти можно, только если он примет твою заявку.`),
       legendMark(el("div", { class: "btn small", style: "opacity:0.5" }, "Мест нет"), "На открытое событие записалось максимум людей."),
       legendMark(el("i", { class: "dot busy" }), `Красная точка вверху — ${roomLow} занята прямо сейчас.`),
       legendMark(el("i", { class: "dot free" }), "Зелёная — сейчас свободна или идёт открытое событие."),
@@ -902,9 +911,61 @@ function roomActs(b) {
         ? el("button", { class: "btn small", disabled: "disabled" }, "Мест нет")
         : el("button", { class: "btn small", onclick: () => act({ action: "room_join", id: b.id }) }, "Я приду"));
   }
+  if (!b.public && !b.mine && b.ends > now()) {
+    acts.push(b.joined
+      ? el("button", { class: "btn small secondary", onclick: () => act({ action: "room_leave", id: b.id }) }, "Не приду")
+      : b.requested === "pending"
+        ? el("button", { class: "btn small secondary", onclick: () => act({ action: "room_unask", id: b.id }) }, "Отозвать заявку")
+        : b.requested === "declined"
+          ? el("button", { class: "btn small", disabled: "disabled" }, "Отказано")
+          : el("button", { class: "btn small", onclick: () => openRoomAsk(b) }, "Попроситься"));
+  }
   if (b.mine && b.ends > now()) acts.push(el("button", { class: "btn small secondary", onclick: () => openRoomBook(roomDayOf(b.starts), b) }, "Изменить"));
   if (b.mine || S.me.admin) acts.push(el("button", { class: "btn small secondary", onclick: () => act({ action: "room_cancel", id: b.id }) }, "Отменить"));
   return acts.length ? el("div", { class: "acts" }, acts) : null;
+}
+
+function roomGuests(b) {
+  if (b.public) return [el("div", { class: "hint" }, roomGoing(b))];
+  const lines = [];
+  if (b.joined) lines.push("Организатор принял твою заявку — ты в списке.");
+  else if (b.requested === "pending") lines.push("Заявка отправлена — ждём ответа организатора.");
+  else if (b.requested === "declined") lines.push("Организатор отказал в заявке.");
+  if (b.going.length) lines.push(`Гости: ${b.going.map(who).join(", ")}`);
+  if (b.requests.length) lines.push(`Ждут ответа: ${b.requests.length} — заявки вверху.`);
+  return lines.map((t) => el("div", { class: "hint" }, t));
+}
+
+function openRoomAsk(b) {
+  const note = el("input", { type: "text", maxlength: R().reasonLength, placeholder: "Например: можно мы вдвоём поиграем?", style: "font-size:16px;text-align:left" });
+  openSheet("Попроситься в бронь", [
+    el("p", {}, el("b", {}, `${dayTitle(roomDayOf(b.starts))}, ${clock(b.starts)}–${clock(b.ends)}`), el("br"), roomWho(b)),
+    el("p", { class: "hint" }, "Это закрытая бронь — прийти можно, только если организатор согласится. Бот отправит ему заявку, а он примет её или откажет."),
+    el("label", {}, "Сообщение организатору (необязательно)"),
+    note,
+    el("p", { class: "hint", style: "margin:6px 0 0" },
+      "Организатор увидит твоё имя, даже если оно скрыто. " +
+      (S.dm === 1 ? "Ответ придёт тебе в личку и будет виден здесь." : "Ответ будет виден здесь, а в личку придёт, если разрешишь боту писать тебе.")),
+    btn("Отправить заявку", () => act({ action: "room_ask", id: b.id, note: note.value }, "Заявка отправлена — ждём ответа организатора.")),
+    btn("Отмена", closeSheet, "secondary"),
+  ]);
+}
+
+function requestsCard() {
+  const list = R().bookings.filter((b) => b.mine && b.requests.length && b.ends > now());
+  if (!list.length) return null;
+  return el("section", { class: "card" },
+    el("h2", {}, "Просятся к тебе"),
+    el("p", { class: "hint", style: "margin:0 0 4px" }, "Это твои закрытые брони — гость придёт, только если ты согласишься. Ответ придёт ему в личку."),
+    list.map((b) => b.requests.map((r) => el("div", { class: "item" },
+      el("div", { class: "row" },
+        el("div", {},
+          el("div", {}, el("b", {}, who(r))),
+          el("div", { class: "hint" }, `${dayTitle(roomDayOf(b.starts))}, ${clock(b.starts)}–${clock(b.ends)}${b.reason ? " — " + b.reason : ""}`),
+          r.note ? el("div", {}, `«${r.note}»`) : null),
+        el("div", { class: "acts" },
+          el("button", { class: "btn small", onclick: () => act({ action: "room_answer", id: b.id, user: r.id, accept: true }) }, "Принять"),
+          el("button", { class: "btn small secondary", onclick: () => act({ action: "room_answer", id: b.id, user: r.id, accept: false }) }, "Отказать")))))));
 }
 
 function roomBadge(b) {
@@ -986,7 +1047,7 @@ function dayCard() {
             el("div", {},
               el("div", {}, el("b", {}, `${dayClock(d, Math.max(b.starts, d.start))}–${dayClock(d, Math.min(b.ends, d.end))}`), b.starts <= now() && b.ends > now() ? " · сейчас" : "", roomBadge(b)),
               el("div", { class: "hint" }, roomWho(b)),
-              b.public ? el("div", { class: "hint" }, roomGoing(b)) : null),
+              roomGuests(b)),
             roomActs(b))))
       : el("p", { class: "hint" }, "Броней нет."),
     el("p", { class: "hint", style: "margin:10px 0 0" }, free.length ? "Свободно: " + free.map(([a, b]) => `${dayClock(d, a)}–${dayClock(d, b)}`).join(", ") : "Свободного времени не осталось."),
@@ -1029,7 +1090,7 @@ function openRoomBook(d, edit = null) {
   const showOpen = () => {
     openHint.textContent = open.checked
       ? "Открытое: в чате позовут всех, любой сможет нажать «Я приду», а ты увидишь, кто идёт."
-      : "Закрытое: игровая просто занята за тобой, записаться на бронь нельзя.";
+      : "Закрытое: игровая занята за тобой. Другие могут только попроситься к тебе — ты сам решаешь, принять или отказать.";
     capacityBox.style.display = open.checked ? "" : "none";
   };
   open.addEventListener("change", showOpen);
@@ -1061,11 +1122,14 @@ function openRoomBook(d, edit = null) {
       line("Дата", dayTitle(d)),
       line("Время", `с ${clock(Number(startSel.value))} до ${endSel.selectedOptions[0].textContent}`),
       line("Зачем", why || "не указано"),
-      line("Бронь", open.checked ? "открытое событие — может прийти любой" : "закрытая — игровая просто занята за тобой"),
+      line("Бронь", open.checked ? "открытое событие — может прийти любой" : "закрытая — игровая занята за тобой, другие могут только попроситься"),
       open.checked ? line("Ждёшь людей", people === null ? "без ограничения" : `до ${people}`) : null,
       line("Имя", hideName.box.checked ? "скрыто — другие увидят «Аноним»" : "видно всем"),
       edit && edit.public && !open.checked && edit.going.length
         ? el("p", { class: "hint", style: "margin:10px 0 0" }, `Записавшиеся (${edit.going.length}) будут сняты с события, им придёт сообщение.`)
+        : null,
+      edit && !edit.public && open.checked && edit.requests.length
+        ? el("p", { class: "hint", style: "margin:10px 0 0" }, `Тем, кто просился (${edit.requests.length}), придёт сообщение, что теперь можно просто нажать «Я приду».`)
         : null,
       btn(edit ? "Да, сохранить" : "Да, бронирую", async () => {
         if (!(await applyName(hideName.box))) return;
@@ -1103,6 +1167,7 @@ function roomView() {
     el("header", { class: "head" }, guideHead("playroom", R().name)),
     guideCard("playroom"),
     roomStatusCard(),
+    requestsCard(),
     eventsCard(),
     calendarCard(),
     dayCard(),
@@ -1131,9 +1196,9 @@ function dmCard() {
     el("b", {}, "Включи личные уведомления"),
     el("p", { class: "hint", style: "margin:6px 0 0" },
       (ask ? "Разреши боту писать тебе" : "Нажми «Старт» в чате с ботом") + (!S.laundry
-        ? " — тогда он сможет писать тебе лично: когда скоро начнётся твоя бронь игровой или событие, на которое ты идёшь, или нужно подтвердить бронь. Без этого напоминания придут в общий чат."
+        ? " — тогда он сможет писать тебе лично: когда скоро начнётся твоя бронь игровой или событие, на которое ты идёшь, нужно подтвердить бронь, кто-то просится к тебе или ответили на твою заявку. Без этого напоминания придут в общий чат."
         : S.room
-        ? " — тогда он сможет писать тебе лично: когда стирка заканчивается, подошла твоя очередь или бронь, твои вещи переложили или нужно подтвердить бронь игровой. Без этого напоминания придут в общий чат."
+        ? " — тогда он сможет писать тебе лично: когда стирка заканчивается, подошла твоя очередь или бронь, твои вещи переложили, нужно подтвердить бронь игровой, кто-то просится к тебе или ответили на твою заявку. Без этого напоминания придут в общий чат."
         : " — тогда он сможет писать тебе лично: когда стирка заканчивается, подошла твоя очередь или бронь, или твои вещи переложили. Без этого напоминания придут в общий чат.")),
     btn(ask ? "Разрешить" : "Открыть бота", () => allowDm(false), "secondary"));
 }
