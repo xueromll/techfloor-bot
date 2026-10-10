@@ -69,6 +69,7 @@ const HELP =
   "напоминания и отметки «внутри чужие вещи, программа не запущена» и «переложил чужие вещи».\n\n" +
   "Как пользоваться: в чате общаги открой тему про стирку и нажми кнопку «Открыть прачечную» " +
   "в закреплённом сообщении.\n\n" +
+  "Лень открывать приложение? Отправь /status — пришлю, какие машины свободны, когда освободятся занятые и что с твоими вещами.\n\n" +
   "Уведомления: напоминания про стирку приходят сюда, в личку. Теперь я могу тебе писать.\n\n" +
   "Что-то не работает? Отправь /problem и опиши проблему.";
 
@@ -81,6 +82,7 @@ const ROOM_HELP =
   "К закрытой брони можно попроситься — организатор примет или откажет.\n\n" +
   "Как пользоваться: в чате общаги открой тему про стирку или про игровую и нажми кнопку " +
   "в закреплённом сообщении — «Открыть прачечную» или «Открыть игровую».\n\n" +
+  "Лень открывать приложение? Отправь /status — пришлю, какие стиралки и сушилки свободны, когда освободятся занятые и что с твоими вещами.\n\n" +
   "Уведомления: напоминания про стирку и про брони игровой приходят сюда, в личку — " +
   "вечером накануне я спрошу, нужна ли бронь на завтра, и напомню за полчаса до начала. " +
   "Теперь я могу тебе писать.\n\n" +
@@ -237,7 +239,8 @@ const PLAYROOM_ONLY = new Set(["room_book", "room_edit", "room_cancel", "room_jo
 const LAUNDRY_ONLY = new Set(["take", "load", "claim", "free", "queue", "unqueue", "next", "unnext", "book", "unbook", "move", "picked", "broken", "fixed", "retime", "admin_reset_laundry"]);
 const ANNOUNCING = new Set(["room_book", "room_edit", "room_cancel"]);
 const UNPINNED = new Set(["dm", "problem"]);
-const COMMANDS = ["/start", "/problem", "/board", "/playroom", "/unpin", "/block", "/unblock", "/blocked"];
+const COMMANDS = ["/start", "/problem", "/status", "/board", "/playroom", "/unpin", "/block", "/unblock", "/blocked"];
+const STATUS_REFRESH = "ls";
 
 const memberCache = new Map();
 const authCache = new Map();
@@ -972,6 +975,92 @@ async function pinnedText(env, chatId) {
   );
 }
 
+async function laundryStatus(env, chatId, userId) {
+  await tick(env, chatId);
+  const t = now();
+  const [machineRows, queueRows, bookingRows, nextRows, movedRows] = await batch(
+    env,
+    q(env, "SELECT * FROM machines WHERE chat_id = ?", chatId),
+    q(env, "SELECT * FROM queue WHERE chat_id = ? ORDER BY priority, id", chatId),
+    q(env, "SELECT * FROM bookings WHERE chat_id = ? AND user_id = ? ORDER BY at", chatId, userId),
+    q(env, "SELECT * FROM nexts WHERE chat_id = ? AND user_id = ?", chatId, userId),
+    q(env, "SELECT * FROM moved WHERE chat_id = ? AND owner_id = ? AND to_mtype IS NULL AND at >= ? ORDER BY at", chatId, userId, t - CLOTHES_HOURS * 3600)
+  );
+  const busy = new Map(machineRows.map((r) => [key(r.mtype, r.num), r]));
+  const until = (ts) => (ts < localMidnight(env, 1) ? clock(env, ts) : moment(env, ts));
+  const left = (r) => Math.max(1, Math.round((r.ends_at - t) / 60));
+  const sections = [];
+  const mine = [];
+  for (const [mtype, cfg] of Object.entries(MACHINES)) {
+    const rows = NUMBERS.map((n) => busy.get(key(mtype, n))).filter(Boolean);
+    const nums = (pick) => rows.filter(pick).map((r) => r.num).join(", ");
+    const free = NUMBERS.filter((n) => !busy.has(key(mtype, n)));
+    const running = rows.filter((r) => r.kind === "run").sort((a, b) => a.ends_at - b.ends_at);
+    const held = rows.filter((r) => r.kind === "hold");
+    const queue = queueRows.filter((r) => r.mtype === mtype);
+    sections.push([
+      `<b>${cfg.title}</b> — свободно ${free.length} из ${NUMBERS.length}${free.length ? ": " + free.join(", ") : ""}`,
+      running.length && `Работают: ${running.map((r) => `${r.num} до ${clock(env, r.ends_at)}`).join(", ")}`,
+      !free.length && running.length && `Ближайшая закончит в ${clock(env, running[0].ends_at)}.`,
+      nums((r) => LEFTOVER.has(r.kind)) && `С вещами внутри: ${nums((r) => LEFTOVER.has(r.kind))}`,
+      held.length && `Придержаны для очереди или брони:${held.map((r) => `${r.num} до ${clock(env, r.ends_at)}`).join(", ")}`,
+      nums((r) => r.kind === "broken") && `Не работают: ${nums((r) => r.kind === "broken")}`,
+      queue.length && `В очереди: ${queue.length} чел.`,
+    ].filter(Boolean).join("\n"));
+    for (const r of rows.filter((r) => r.user_id === userId)) {
+      const name = mname(mtype, r.num);
+      if (r.kind === "run") mine.push(`${name} — программа до ${clock(env, r.ends_at)} (ещё ${left(r)} мин)`);
+      else if (r.kind === "done") mine.push(`${name} закончила${r.finished_at ? " в " + clock(env, r.finished_at) : ""} — забери вещи`);
+      else if (r.kind === "hold") mine.push(`${name} ждёт тебя до ${clock(env, r.ends_at)}`);
+      else if (r.kind === "parked") mine.push(`${name} — сюда переложили твои вещи`);
+      else if (r.kind === "loaded") mine.push(`${name} — внутри твои вещи, программа не запущена`);
+    }
+    const place = queue.findIndex((r) => r.user_id === userId);
+    if (place >= 0) mine.push(`Очередь на ${cfg.acc}: ты ${place + 1} из ${queue.length}`);
+    for (const r of nextRows.filter((r) => r.mtype === mtype)) mine.push(`Бронь после программы: ${mname(mtype, r.num)}`);
+    for (const b of bookingRows.filter((b) => b.mtype === mtype)) mine.push(`Бронь на ${cfg.acc}${b.num ? " " + b.num : ""}: ${until(b.at)}`);
+  }
+  for (const r of movedRows) mine.push(`Твои вещи из ${MACHINES[r.from_mtype].gen} ${r.from_num} переложили на гладильную доску`);
+  return (
+    `<b>Прачечная</b> · обновлено в ${fmt(env, "ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(t * 1000))}\n\n` +
+    sections.join("\n\n") +
+    (mine.length ? `\n\n<b>Твоё</b>\n${mine.join("\n")}` : "") +
+    "\n\nПоказываю то, что отметили в приложении."
+  );
+}
+
+async function statusView(env, userId) {
+  const rows = await all(
+    env,
+    "SELECT b.chat_id, k.until, k.reason FROM boards b LEFT JOIN people p ON p.chat_id = b.chat_id AND p.user_id = ? " +
+      "LEFT JOIN blocks k ON k.chat_id = b.chat_id AND k.user_id = ? AND (k.until IS NULL OR k.until > ?) ORDER BY p.seen_at DESC",
+    userId, userId, now()
+  );
+  for (const r of rows) {
+    if (!allowed(env, r.chat_id) || !(await membership(env, r.chat_id, userId)).inside) continue;
+    if (r.reason) return { text: blockedText(env, r) };
+    return {
+      text: await laundryStatus(env, r.chat_id, userId),
+      reply_markup: {
+        inline_keyboard: [[{ text: "Обновить", callback_data: STATUS_REFRESH }, { text: "Открыть прачечную", url: await appLink(env, r.chat_id) }]],
+      },
+    };
+  }
+  return { text: "Не нашёл прачечную ни в одном твоём чате — статус машин видят только участники чата общаги." };
+}
+
+async function refreshStatus(env, cq) {
+  const answer = (text) => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
+  if (!laundry(env) || !cq.message) return answer();
+  const view = await statusView(env, cq.from.id);
+  const res = await tg(env, "editMessageText", { chat_id: cq.message.chat.id, message_id: cq.message.message_id, parse_mode: "HTML", ...view });
+  const body = (text) => String(text ?? "").replace(/<[^>]+>/g, "").split("\n").slice(1).join("\n");
+  if (res.ok) return answer(body(view.text) === body(cq.message.text) ? "Обновлено — пока ничего не изменилось." : "Обновлено.");
+  if (/not modified/i.test(res.description || "")) return answer("Уже обновлено.");
+  await answer();
+  await tg(env, "sendMessage", { chat_id: cq.message.chat.id, parse_mode: "HTML", ...view });
+}
+
 async function say(env, chatId, text, extra = {}, table = "boards") {
   let thread = extra.message_thread_id;
   if (thread === undefined) {
@@ -1070,7 +1159,7 @@ async function onUpdate(update, env) {
   if (typeof msg.text !== "string" || !msg.text.startsWith("/")) return;
   const [command, target] = msg.text.trim().split(/\s+/)[0].split("@");
   if (target && target.toLowerCase() !== (await username(env)).toLowerCase()) return;
-  if (!COMMANDS.includes(command) || (command === "/playroom" && !playroom(env)) || (command === "/board" && !laundry(env))) return;
+  if (!COMMANDS.includes(command) || (command === "/playroom" && !playroom(env)) || ((command === "/board" || command === "/status") && !laundry(env))) return;
   const chat = msg.chat;
   if (chat.type === "private") {
     if (!msg.from || spend(env, "command", msg.from.id)) return;
@@ -1085,6 +1174,7 @@ async function onUpdate(update, env) {
       });
       return;
     }
+    if (command === "/status") return tg(env, "sendMessage", { chat_id: chat.id, parse_mode: "HTML", ...(await statusView(env, msg.from.id)) });
     await tg(env, "sendMessage", { chat_id: chat.id, text: command === "/start" ? helpText(env) : `Отправь ${command} в групповом чате.` });
     return;
   }
@@ -1100,7 +1190,7 @@ async function onUpdate(update, env) {
   if (command === "/playroom") await updateRoomBoard(env, chat.id, true, thread);
   else if (command === "/board" || command === "/start") await updatePinned(env, chat.id, command === "/board", thread);
   else if (command === "/unpin") await unpin(env, msg, thread);
-  else if (command !== "/problem") await moderate(env, msg, command, thread, anonymousAdmin ? null : msg.from);
+  else if (command !== "/problem" && command !== "/status") await moderate(env, msg, command, thread, anonymousAdmin ? null : msg.from);
 }
 
 async function problem(env, msg, text) {
@@ -1291,6 +1381,7 @@ async function moderate(env, msg, command, thread, by) {
 
 async function onCallback(env, cq) {
   if (!cq.from || spend(env, "tap", cq.from.id)) return;
+  if (cq.data === STATUS_REFRESH) return refreshStatus(env, cq);
   const parsed = String(cq.data || "").match(/^r([kcl]):(\d+)$|^r([ad]):(\d+):(\d+)$/);
   const answer = (text) => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
   const rewrite = (text) =>
@@ -1403,7 +1494,14 @@ async function onSetup(url, env, ip) {
   const profile = [
     await tg(env, "setMyDescription", { description: bySection(env, ROOM_DESCRIPTION, DESCRIPTION, PLAYROOM_DESCRIPTION) }),
     await tg(env, "setMyShortDescription", { short_description: bySection(env, ROOM_SHORT_DESCRIPTION, SHORT_DESCRIPTION, PLAYROOM_SHORT_DESCRIPTION) }),
-    await tg(env, "setMyCommands", { commands: [{ command: "start", description: "Что умеет бот" }, { command: "problem", description: "Сообщить о проблеме" }], scope: { type: "all_private_chats" } }),
+    await tg(env, "setMyCommands", {
+      commands: [
+        { command: "start", description: "Что умеет бот" },
+        ...(laundry(env) ? [{ command: "status", description: "Что сейчас со стиралками и сушилками" }] : []),
+        { command: "problem", description: "Сообщить о проблеме" },
+      ],
+      scope: { type: "all_private_chats" },
+    }),
     await tg(env, "setMyCommands", {
       commands: [
         ...(laundry(env) ? [{ command: "board", description: "Закрепить прачечную в этой теме" }] : []),

@@ -1,4 +1,4 @@
-import time
+import re, time
 from common import *
 
 db = start()
@@ -82,4 +82,43 @@ st, d = api(BORYA, {"action": "load", "t": "w", "n": 4}); assert st == 200, d
 st, d = api(GALYA, {"action": "take", "t": "w", "n": 4, "time": "40", "owner": "unknown"}); assert "чужие вещи" in err(d), d
 st, d = api(GALYA, {"action": "free", "t": "w", "n": 4}); assert "Освободить может" in err(d), d
 st, d = api(GALYA); w4 = m(d, "w", 4); assert w4["status"] == "loaded" and w4["reporter"]["id"] == 2, w4
+print("--- /status в личке: что свободно, что работает и что твоё")
+wipe()
+api(ANYA, {"action": "take", "t": "w", "n": 1, "time": "40"})
+api(BORYA, {"action": "take", "t": "w", "n": 2, "time": "30"})
+api(VOVA, {"action": "load", "t": "w", "n": 3})
+api(GALYA, {"action": "take", "t": "d", "n": 5, "time": "50"})
+sql("UPDATE machines SET ends_at = ? WHERE mtype='d' AND num=5", time.time() - 1); cron()
+status = lambda uid, mid=900: update({"message": {"message_id": mid, "text": "/status", "from": {"id": uid, "first_name": "X"}, "chat": {"id": uid, "type": "private"}}})
+said = lambda uid, start: [x for x in sent()[start:] if x["chat_id"] == uid]
+before = len(sent())
+st, d = status(2); assert st == 200, d
+got = said(2, before); assert len(got) == 1, got
+text = got[0]["text"]
+assert "свободно 8 из 11: 4, 5, 6, 7, 8, 9, 10, 11" in text and "Работают: 2 до" in text and "1 до" in text, text
+assert "С вещами внутри: 3" in text and "свободно 10 из 11" in text and "С вещами внутри: 5" in text, text
+assert "<b>Твоё</b>" in text and "Стиралка 2 — программа до" in text and "Стиралка 1" not in text.split("Твоё")[1], text
+assert "Аня" not in text and "anya" not in text, text
+before = len(sent())
+status(4)
+text = said(4, before)[0]["text"]; assert "Сушилка 5 закончила" in text and "забери вещи" in text, text
+print("--- /status: очередь и брони попадают в «Твоё», занятые все — когда закончит ближайшая")
+for n in range(1, 12): sql("INSERT OR REPLACE INTO machines (chat_id, mtype, num, user_id, user_name, started_at, ends_at, kind) VALUES (?, 'w', ?, 99, 'X', ?, ?, 'run')", CH, n, time.time(), time.time() + 600 + n * 60)
+st, d = api(BORYA, {"action": "queue", "t": "w"}); assert st == 200, d
+before = len(sent())
+status(2, 901)
+text = said(2, before)[0]["text"]
+assert "свободно 0 из 11" in text and "Ближайшая закончит в" in text and "В очереди: 1 чел." in text and "Очередь на стиралку: ты 1 из 1" in text, text
+print("--- /status не для чужих")
+before = len(sent())
+status(OUTSIDER_UID, 902)
+text = said(OUTSIDER_UID, before)[0]["text"]; assert "Не нашёл прачечную" in text, text
+print("--- «Обновить» переписывает сообщение свежим статусом, время со секундами")
+wipe("queue")
+sql("DELETE FROM machines WHERE mtype='w' AND num=4")
+before = len(edits())
+st, d = update({"callback_query": {"id": "cb9", "data": "ls", "from": {"id": 2, "first_name": "Боря"}, "message": {"message_id": 777, "chat": {"id": 2, "type": "private"}, "text": "Прачечная · обновлено в 00:00:00\n\nстарое"}}})
+assert st == 200, d
+got = [x for x in edits()[before:] if x["chat_id"] == 2 and x["message_id"] == 777]; assert len(got) == 1, edits()[before:]
+text = got[0]["text"]; assert "свободно 1 из 11: 4" in text and re.search(r"обновлено в \d\d:\d\d:\d\d", text), text
 print("DONE TESTS OK")

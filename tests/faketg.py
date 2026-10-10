@@ -3,6 +3,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from common import ADMIN_UID, BAD_THREAD, DM_BLOCKED_UID, FRESH_UID, OUTSIDER_UID
 n = [100]
 sent = []
+edits = []
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def reply(self, data):
@@ -27,9 +28,10 @@ class H(BaseHTTPRequestHandler):
             if th: res.update(message_thread_id=th, is_topic_message=True)
             where = "DM " + str(body["chat_id"]) if body["chat_id"] > 0 else f"CHAT[topic {th or 'General'}]"
             print(f"{where}: " + body["text"].replace("\n", " | ")[:90], flush=True)
+        if method == "editMessageText": edits.append({"chat_id": body["chat_id"], "message_id": body["message_id"], "text": body["text"]})
         if method == "leaveChat": sent.append({"chat_id": body["chat_id"], "left": True})
         if method.startswith("setMy"): print("TG", method, json.dumps(body, ensure_ascii=False)[:140], flush=True)
         self.reply({"ok": True, "result": res})
     def do_GET(self):
-        self.reply(sent)
+        self.reply(edits if self.path == "/edits" else sent)
 ThreadingHTTPServer(("127.0.0.1", 8799), H).serve_forever()

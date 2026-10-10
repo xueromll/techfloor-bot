@@ -125,5 +125,8 @@ def fresh(name, username=None, start=CH):
 def sent():
     with urllib.request.urlopen("http://127.0.0.1:8799/sent") as r: return json.loads(r.read().decode())
 
+def edits():
+    with urllib.request.urlopen("http://127.0.0.1:8799/edits") as r: return json.loads(r.read().decode())
+
 def m(d, t, n): return next(x for x in d["machines"] if x["t"] == t and x["n"] == n)
 def err(d): return d.get("error", "") if isinstance(d, dict) else str(d)
