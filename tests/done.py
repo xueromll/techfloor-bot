@@ -1,4 +1,4 @@
-import re, time
+import time
 from common import *
 
 db = start()
@@ -113,12 +113,7 @@ print("--- /status не для чужих")
 before = len(sent())
 status(OUTSIDER_UID, 902)
 text = said(OUTSIDER_UID, before)[0]["text"]; assert "Не нашёл прачечную" in text, text
-print("--- «Обновить» переписывает сообщение свежим статусом, время со секундами")
-wipe("queue")
-sql("DELETE FROM machines WHERE mtype='w' AND num=4")
-before = len(edits())
-st, d = update({"callback_query": {"id": "cb9", "data": "ls", "from": {"id": 2, "first_name": "Боря"}, "message": {"message_id": 777, "chat": {"id": 2, "type": "private"}, "text": "Прачечная · обновлено в 00:00:00\n\nстарое"}}})
+print("--- старая кнопка «Обновить» в уже отправленных сводках ничего не ломает")
+st, d = update({"callback_query": {"id": "cb9", "data": "ls", "from": {"id": 2, "first_name": "Боря"}, "message": {"message_id": 777, "chat": {"id": 2, "type": "private"}}}})
 assert st == 200, d
-got = [x for x in edits()[before:] if x["chat_id"] == 2 and x["message_id"] == 777]; assert len(got) == 1, edits()[before:]
-text = got[0]["text"]; assert "свободно 1 из 11: 4" in text and re.search(r"обновлено в \d\d:\d\d:\d\d", text), text
 print("DONE TESTS OK")

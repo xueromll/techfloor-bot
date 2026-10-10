@@ -240,8 +240,6 @@ const LAUNDRY_ONLY = new Set(["take", "load", "claim", "free", "queue", "unqueue
 const ANNOUNCING = new Set(["room_book", "room_edit", "room_cancel"]);
 const UNPINNED = new Set(["dm", "problem"]);
 const COMMANDS = ["/start", "/problem", "/status", "/board", "/playroom", "/unpin", "/block", "/unblock", "/blocked"];
-const STATUS_REFRESH = "ls";
-
 const memberCache = new Map();
 const authCache = new Map();
 const blockCache = new Map();
@@ -1022,7 +1020,7 @@ async function laundryStatus(env, chatId, userId) {
   }
   for (const r of movedRows) mine.push(`Твои вещи из ${MACHINES[r.from_mtype].gen} ${r.from_num} переложили на гладильную доску`);
   return (
-    `<b>Прачечная</b> · обновлено в ${fmt(env, "ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(t * 1000))}\n\n` +
+    `<b>Прачечная</b> · ${clock(env, t)}\n\n` +
     sections.join("\n\n") +
     (mine.length ? `\n\n<b>Твоё</b>\n${mine.join("\n")}` : "") +
     "\n\nПоказываю то, что отметили в приложении."
@@ -1042,23 +1040,11 @@ async function statusView(env, userId) {
     return {
       text: await laundryStatus(env, r.chat_id, userId),
       reply_markup: {
-        inline_keyboard: [[{ text: "Обновить", callback_data: STATUS_REFRESH }, { text: "Открыть прачечную", url: await appLink(env, r.chat_id) }]],
+        inline_keyboard: [[{ text: "Открыть прачечную", url: await appLink(env, r.chat_id) }]],
       },
     };
   }
   return { text: "Не нашёл прачечную ни в одном твоём чате — статус машин видят только участники чата общаги." };
-}
-
-async function refreshStatus(env, cq) {
-  const answer = (text) => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
-  if (!laundry(env) || !cq.message) return answer();
-  const view = await statusView(env, cq.from.id);
-  const res = await tg(env, "editMessageText", { chat_id: cq.message.chat.id, message_id: cq.message.message_id, parse_mode: "HTML", ...view });
-  const body = (text) => String(text ?? "").replace(/<[^>]+>/g, "").split("\n").slice(1).join("\n");
-  if (res.ok) return answer(body(view.text) === body(cq.message.text) ? "Обновлено — пока ничего не изменилось." : "Обновлено.");
-  if (/not modified/i.test(res.description || "")) return answer("Уже обновлено.");
-  await answer();
-  await tg(env, "sendMessage", { chat_id: cq.message.chat.id, parse_mode: "HTML", ...view });
 }
 
 async function say(env, chatId, text, extra = {}, table = "boards") {
@@ -1381,7 +1367,6 @@ async function moderate(env, msg, command, thread, by) {
 
 async function onCallback(env, cq) {
   if (!cq.from || spend(env, "tap", cq.from.id)) return;
-  if (cq.data === STATUS_REFRESH) return refreshStatus(env, cq);
   const parsed = String(cq.data || "").match(/^r([kcl]):(\d+)$|^r([ad]):(\d+):(\d+)$/);
   const answer = (text) => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
   const rewrite = (text) =>
