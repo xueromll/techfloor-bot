@@ -14,7 +14,7 @@ st, d = api(PBORYA, {"action": "room_book", "starts": tom + 18 * 3600, "ends": t
 b = d["room"]["bookings"][0]; assert b["reason"] == "Настолки и чай" and b["mine"], b
 st, d = api(PANYA, {"action": "room_book", "starts": tom + 19 * 3600, "ends": tom + 21 * 3600}); assert "пересекается" in err(d), d
 st, d = api(PANYA, {"action": "room_book", "starts": tom + 20 * 3600, "ends": tom + 21 * 3600}); assert st == 200, d
-st, d = api(PANYA, {"action": "room_book", "starts": tom, "ends": tom + 13 * 3600}); assert "не дольше" in err(d), d
+st, d = api(PANYA, {"action": "room_book", "starts": tom, "ends": tom + 7 * 3600}); assert "не дольше 6 ч" in err(d), d
 st, d = api(PANYA, {"action": "room_book", "starts": cur - s, "ends": cur + s}); assert "прошло" in err(d), d
 st, d = api(PANYA, {"action": "room_book", "starts": days[-1]["end"], "ends": days[-1]["end"] + s}); assert "дней вперёд" in err(d), d
 st, d = api(PANYA, {"action": "room_book", "starts": cur, "ends": cur + 2 * s, "reason": "Сейчас"}); assert st == 200, d
