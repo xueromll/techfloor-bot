@@ -17,6 +17,17 @@ for r in range(ROUNDS):
     assert one("SELECT COUNT(*) FROM machines WHERE chat_id = ? AND mtype = 'w' AND num = 1", CH) == 1
     assert one("SELECT user_id FROM machines WHERE chat_id = ? AND mtype = 'w' AND num = 1", CH) == ok[0] + 1
 
+print("--- параллельные правки времени от разных людей не обходят лимит")
+for r in range(ROUNDS):
+    wipe("machines")
+    st, d = api(BORYA, {"action": "take", "t": "w", "n": 1, "time": "40"}); assert st == 200, d
+    sql("UPDATE machines SET editors = ',7,8,' WHERE mtype = 'w' AND num = 1")
+    res = parallel(lambda: api(VOVA, {"action": "retime", "t": "w", "n": 1, "time": "50"}),
+                   lambda: api(GALYA, {"action": "retime", "t": "w", "n": 1, "time": "60"}))
+    ok = [i for i, (st, d) in enumerate(res) if st == 200]
+    assert len(ok) == 1, res
+    assert one("SELECT editors FROM machines WHERE chat_id = ? AND mtype = 'w' AND num = 1", CH) == f",7,8,{ok[0] + 3},"
+
 print("--- параллельный claim: хозяин находится ровно один")
 for r in range(ROUNDS):
     wipe("machines")

@@ -2,6 +2,8 @@ import PAGE from "../webapp/index.html";
 
 const WARN_MINUTES = 15;
 const MAX_MINUTES = 300;
+const TIMER_EDITS = 3;
+const TIMER_SHIFT_MINUTES = 60;
 const CLAIM_MINUTES = 10;
 const SLOT_MINUTES = 30;
 const BOOK_DAYS = 2;
@@ -24,7 +26,7 @@ const AUTH_CACHE_SECONDS = 300;
 const AUTH_CACHE_MAX = 200;
 const SWEEP_SECONDS = 600;
 const RECENT_SECONDS = 120;
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 8;
 const ROOM_USER_BOOKINGS = 3;
 const INIT_DATA_MAX = 4096;
 const API_BODY_MAX = 8 * 1024;
@@ -116,12 +118,30 @@ const SHORT_DESCRIPTION = "Прачечная техэтажа: кто заня�
 
 const ROOM_SHORT_DESCRIPTION = "Прачечная и игровая техэтажа: кто занял, очередь, брони и напоминания.";
 
+const PLAYROOM_HELP =
+  "Привет! Я бот техэтажа общаги.\n\n" +
+  "Игровая — календарь: свободна ли она сейчас, брони на любой день и бронь своего времени. " +
+  "Бронь может быть открытым событием — тогда любой может нажать «Я приду».\n\n" +
+  "Как пользоваться: в чате общаги открой тему про игровую и нажми кнопку «Открыть игровую» " +
+  "в закреплённом сообщении.\n\n" +
+  "Уведомления: напоминания про брони игровой приходят сюда, в личку — " +
+  "вечером накануне я спрошу, нужна ли бронь на завтра, и напомню за полчаса до начала. " +
+  "Теперь я могу тебе писать.\n\n" +
+  "Что-то не работает? Отправь /problem и опиши проблему.";
+
+const PLAYROOM_DESCRIPTION =
+  "Бот игровой техэтажа общаги.\n\n" +
+  "Календарь броней: посмотреть, свободна ли игровая, забронировать время, устроить открытое событие или записаться на чужое.\n\n" +
+  "Открывай приложение кнопкой из закреплённого сообщения в чате общаги.";
+
+const PLAYROOM_SHORT_DESCRIPTION = "Игровая техэтажа: календарь броней, открытые события и напоминания.";
+
 const FOREIGN_CHAT = "Этот бот работает только в чате общаги техэтажа.";
 
 const PIN_HELP =
   "Не получилось закрепить сообщение.\n" +
   "Админы, сделайте бота администратором с правами «Закреплять сообщения» " +
-  "и «Удалять сообщения», затем отправьте /board.";
+  "и «Удалять сообщения», затем отправьте ";
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS machines (
@@ -129,6 +149,7 @@ const SCHEMA = [
     user_id INTEGER NOT NULL, user_name TEXT NOT NULL, username TEXT,
     started_at REAL NOT NULL, ends_at REAL NOT NULL, kind TEXT NOT NULL DEFAULT 'run', warned INTEGER NOT NULL DEFAULT 0,
     reporter_id INTEGER, reporter_name TEXT, reporter_username TEXT, finished_at REAL, note TEXT,
+    planned_at REAL, editors TEXT, editor_id INTEGER, editor_name TEXT, editor_username TEXT,
     PRIMARY KEY (chat_id, mtype, num))`,
   `CREATE TABLE IF NOT EXISTS boards (chat_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL, text TEXT, thread_id INTEGER)`,
   `CREATE TABLE IF NOT EXISTS queue (
@@ -190,6 +211,11 @@ const MIGRATIONS = [
   "ALTER TABLE room_bookings ADD COLUMN public INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE room_bookings ADD COLUMN capacity INTEGER",
   "ALTER TABLE machines ADD COLUMN note TEXT",
+  "ALTER TABLE machines ADD COLUMN planned_at REAL",
+  "ALTER TABLE machines ADD COLUMN editors TEXT",
+  "ALTER TABLE machines ADD COLUMN editor_id INTEGER",
+  "ALTER TABLE machines ADD COLUMN editor_name TEXT",
+  "ALTER TABLE machines ADD COLUMN editor_username TEXT",
 ];
 
 const NUMBERS = WALLS.flat();
@@ -200,6 +226,7 @@ const LEFTOVER = new Set(["done", "parked", "loaded"]);
 const REPLACEABLE = new Set(["hold", "done", "loaded"]);
 const ROOM_ACTIONS = new Set(["room_book", "room_edit", "room_cancel", "room_join", "room_leave", "admin_reset_room", "privacy"]);
 const PLAYROOM_ONLY = new Set(["room_book", "room_edit", "room_cancel", "room_join", "room_leave", "admin_reset_room"]);
+const LAUNDRY_ONLY = new Set(["take", "load", "claim", "free", "queue", "unqueue", "next", "unnext", "book", "unbook", "move", "picked", "broken", "fixed", "retime", "admin_reset_laundry"]);
 const ANNOUNCING = new Set(["room_book", "room_edit", "room_cancel"]);
 const UNPINNED = new Set(["dm", "problem"]);
 const COMMANDS = ["/start", "/problem", "/board", "/playroom", "/unpin", "/block", "/unblock", "/blocked"];
@@ -376,6 +403,10 @@ async function cronRun(env) {
 
 const now = () => Date.now() / 1000;
 const playroom = (env) => env.PLAYROOM === "on";
+const laundry = (env) => env.LAUNDRY !== "off";
+const bySection = (env, both, laundryOnly, playroomOnly) => (!playroom(env) ? laundryOnly : laundry(env) ? both : playroomOnly);
+const helpText = (env) => bySection(env, ROOM_HELP, HELP, PLAYROOM_HELP);
+const boardCommands = (env) => [laundry(env) && "/board", playroom(env) && "/playroom"].filter(Boolean).join(" или ");
 const allowedChats = (env) => String(env.ALLOWED_CHATS || "").split(/[\s,]+/).filter(Boolean);
 const allowed = (env, chatId) => {
   const list = allowedChats(env);
@@ -726,8 +757,7 @@ async function dispatch(env, chatId, mtype) {
   return offered;
 }
 
-async function tick(env, chatId = null) {
-  const t = now();
+async function tickLaundry(env, t, chatId) {
   const scope = chatId === null ? "" : " AND chat_id = ?";
   const arg = chatId === null ? [] : [chatId];
   const [warnDue, expired, dueBookings, hungry] = await batch(
@@ -825,6 +855,11 @@ async function tick(env, chatId = null) {
   }
 
   for (const id of dirty) await updatePinned(env, id);
+}
+
+async function tick(env, chatId = null) {
+  const t = now();
+  if (laundry(env)) await tickLaundry(env, t, chatId);
   if (chatId !== null) return;
   if (t - cleanupAt > SWEEP_SECONDS) {
     cleanupAt = t;
@@ -971,10 +1006,11 @@ async function placeBoard(env, table, chatId, text, markup, recreate, thread) {
   await env.DB.prepare(`INSERT OR REPLACE INTO ${table} (chat_id, message_id, text, thread_id) VALUES (?, ?, ?, ?)`)
     .bind(chatId, sent.result.message_id, text, placed).run();
   const pin = await tg(env, "pinChatMessage", { chat_id: chatId, message_id: sent.result.message_id, disable_notification: true });
-  if (!pin.ok) await say(env, chatId, PIN_HELP, {}, table);
+  if (!pin.ok) await say(env, chatId, `${PIN_HELP}${table === "pboards" ? "/playroom" : "/board"}.`, {}, table);
 }
 
 async function updatePinned(env, chatId, recreate = false, thread = undefined) {
+  if (!laundry(env)) return;
   const markup = { inline_keyboard: [[{ text: "Открыть прачечную", url: await appLink(env, chatId) }]] };
   await placeBoard(env, "boards", chatId, await pinnedText(env, chatId), markup, recreate, thread);
 }
@@ -1025,7 +1061,7 @@ async function onUpdate(update, env) {
   if (typeof msg.text !== "string" || !msg.text.startsWith("/")) return;
   const [command, target] = msg.text.trim().split(/\s+/)[0].split("@");
   if (target && target.toLowerCase() !== (await username(env)).toLowerCase()) return;
-  if (!COMMANDS.includes(command) || (command === "/playroom" && !playroom(env))) return;
+  if (!COMMANDS.includes(command) || (command === "/playroom" && !playroom(env)) || (command === "/board" && !laundry(env))) return;
   const chat = msg.chat;
   if (chat.type === "private") {
     if (!msg.from || spend(env, "command", msg.from.id)) return;
@@ -1040,7 +1076,7 @@ async function onUpdate(update, env) {
       });
       return;
     }
-    await tg(env, "sendMessage", { chat_id: chat.id, text: command === "/start" ? (playroom(env) ? ROOM_HELP : HELP) : `Отправь ${command} в групповом чате.` });
+    await tg(env, "sendMessage", { chat_id: chat.id, text: command === "/start" ? helpText(env) : `Отправь ${command} в групповом чате.` });
     return;
   }
   if (chat.type !== "group" && chat.type !== "supergroup") return;
@@ -1149,7 +1185,7 @@ async function unpin(env, msg, thread) {
     await tg(env, "deleteMessage", { chat_id: chatId, message_id: board.message_id });
     removed.push(name);
   }
-  const back = playroom(env) ? "/board или /playroom" : "/board";
+  const back = boardCommands(env);
   const text = removed.length
     ? `Открепил ${removed.join(" и ")}${everywhere ? "" : " в этой теме"}. Вернуть — ${back} в нужной теме.`
     : everywhere
@@ -1234,9 +1270,10 @@ async function moderate(env, msg, command, thread, by) {
   ]);
   cacheSet(blockCache, `${chatId}:${target.id}`, { until, reason: "admin" }, BLOCK_CACHE_MAX);
   const rooms = playroom(env) ? out[4].meta.changes : 0;
+  const dropped = [laundry(env) && "очередь и брони прачечной сняты", rooms && `будущих броней ${ROOM_GEN} отменено: ${rooms}`].filter(Boolean);
   await answer(
-    `${quiet(target)} больше не может пользоваться приложением ${until ? "до " + moment(env, until) : "— пока админ не вернёт доступ (/unblock)"}. ` +
-      "Очередь и брони прачечной сняты" + (rooms ? `, будущих броней ${ROOM_GEN} отменено: ${rooms}.` : ".")
+    `${quiet(target)} больше не может пользоваться приложением ${until ? "до " + moment(env, until) : "— пока админ не вернёт доступ (/unblock)"}.` +
+      (dropped.length ? ` ${capitalize(dropped.join(", "))}.` : "")
   );
   await updatePinned(env, chatId);
   if (rooms || out[5].meta.changes) await updateRoomBoard(env, chatId);
@@ -1333,12 +1370,12 @@ async function onSetup(url, env, ip) {
   const left = await leaveForeign(env);
   const rooms = playroom(env);
   const profile = [
-    await tg(env, "setMyDescription", { description: rooms ? ROOM_DESCRIPTION : DESCRIPTION }),
-    await tg(env, "setMyShortDescription", { short_description: rooms ? ROOM_SHORT_DESCRIPTION : SHORT_DESCRIPTION }),
+    await tg(env, "setMyDescription", { description: bySection(env, ROOM_DESCRIPTION, DESCRIPTION, PLAYROOM_DESCRIPTION) }),
+    await tg(env, "setMyShortDescription", { short_description: bySection(env, ROOM_SHORT_DESCRIPTION, SHORT_DESCRIPTION, PLAYROOM_SHORT_DESCRIPTION) }),
     await tg(env, "setMyCommands", { commands: [{ command: "start", description: "Что умеет бот" }, { command: "problem", description: "Сообщить о проблеме" }], scope: { type: "all_private_chats" } }),
     await tg(env, "setMyCommands", {
       commands: [
-        { command: "board", description: "Закрепить прачечную в этой теме" },
+        ...(laundry(env) ? [{ command: "board", description: "Закрепить прачечную в этой теме" }] : []),
         ...(rooms ? [{ command: "playroom", description: "Закрепить игровую в этой теме" }] : []),
         { command: "unpin", description: "Открепить бота в этой теме (/unpin all — во всём чате)" },
         { command: "block", description: "Закрыть доступ к приложению (ответом на сообщение)" },
@@ -1457,7 +1494,9 @@ async function authorize(request, env, bucket) {
   const chatId = Number(start[1]);
   if (!allowed(env, chatId)) throw new ApiError(FOREIGN_CHAT, 403);
   const rooms = playroom(env);
-  const section = rooms && start[2] === "p" ? "playroom" : "laundry";
+  const washing = laundry(env);
+  if (!rooms && !washing) throw new ApiError("Приложение сейчас выключено.", 404);
+  const section = rooms && (start[2] === "p" || !washing) ? "playroom" : "laundry";
   const cached = activeBlock(chatId, user.id);
   if (cached) throw new ApiError(blockedText(env, cached), 403);
   const retry = spend(env, bucket, user.id);
@@ -1467,15 +1506,14 @@ async function authorize(request, env, bucket) {
     throw block ? new ApiError(blockedText(env, block), 403) : tooMany(retry);
   }
   await ensureSchema(env);
+  const boardSql = [washing && "SELECT 1 AS ok FROM boards WHERE chat_id = ?", rooms && "SELECT 1 AS ok FROM pboards WHERE chat_id = ?"].filter(Boolean);
   const [configured, mine, blocked] = await batch(
     env,
-    rooms
-      ? q(env, "SELECT 1 AS ok FROM boards WHERE chat_id = ? UNION SELECT 1 FROM pboards WHERE chat_id = ?", chatId, chatId)
-      : q(env, "SELECT 1 AS ok FROM boards WHERE chat_id = ?", chatId),
+    q(env, boardSql.join(" UNION "), ...boardSql.map(() => chatId)),
     q(env, "SELECT * FROM people WHERE chat_id = ? AND user_id = ?", chatId, user.id),
     q(env, "SELECT until, reason FROM blocks WHERE chat_id = ? AND user_id = ? AND (until IS NULL OR until > ?)", chatId, user.id, now())
   );
-  if (!configured.length) throw new ApiError(`В этом чате бот не настроен. Админу нужно отправить ${rooms ? "/board или /playroom" : "/board"}.`, 404);
+  if (!configured.length) throw new ApiError(`В этом чате бот не настроен. Админу нужно отправить ${boardCommands(env)}.`, 404);
   if (blocked.length) {
     cacheSet(blockCache, `${chatId}:${user.id}`, blocked[0], BLOCK_CACHE_MAX);
     throw new ApiError(blockedText(env, blocked[0]), 403);
@@ -1562,6 +1600,10 @@ async function state(env, chatId, me, admin, section = "laundry") {
         const showReporter = row.kind !== "parked" || admin || row.reporter_id === me.id;
         Object.assign(item, { owner: view(person(row)), ends: row.ends_at, reporter: showReporter ? view(person(row, "reporter")) : null, finished: row.finished_at });
         if (row.kind === "broken") item.note = row.note || "";
+        if (row.kind === "run") {
+          const editors = editorsOf(row);
+          Object.assign(item, { started: row.started_at, planned: row.planned_at, editor: view(person(row, "editor")), edits: editors.length, editedByMe: editors.includes(me.id) });
+        }
       }
       const nxt = nexts.get(k);
       if (nxt) item.next = view(person(nxt));
@@ -1592,6 +1634,8 @@ async function state(env, chatId, me, admin, section = "laundry") {
     clothesHours: CLOTHES_HOURS,
     noteLength: BROKEN_NOTE_LENGTH,
     maxMinutes: MAX_MINUTES,
+    timerEdits: TIMER_EDITS,
+    timerShift: TIMER_SHIFT_MINUTES,
     bookingGap: BOOKING_GAP_MINUTES,
     machines,
     queue,
@@ -1603,7 +1647,8 @@ async function state(env, chatId, me, admin, section = "laundry") {
     tomorrow: localMidnight(env, 1),
     tz: env.TZ_NAME || "Asia/Yekaterinburg",
     section,
-    sections: { laundry: boards.has("laundry"), playroom: rooms && boards.has("playroom") },
+    laundry: laundry(env),
+    sections: { laundry: laundry(env) && boards.has("laundry"), playroom: rooms && boards.has("playroom") },
     room: rooms ? roomState(days, roomRows, joinRows, view, me.id) : null,
     problems: Number(env.OWNER_ID) ? { kinds: PROBLEM_KINDS, length: PROBLEM_LENGTH } : null,
   };
@@ -1765,6 +1810,14 @@ function typeArg(body) {
 
 function ownerArg(me, body) {
   return body.owner === "unknown" ? { owner: UNKNOWN, reporter: me } : { owner: me, reporter: null };
+}
+
+function starterOf(row) {
+  return row.reporter_id ?? row.user_id;
+}
+
+function editorsOf(row) {
+  return String(row.editors ?? "").split(",").filter(Boolean).map(Number);
 }
 
 function occupiedText(mtype, num, kind) {
@@ -1998,7 +2051,7 @@ const ACTIONS = {
   },
 
   async dm(env, chatId, me) {
-    const res = await tg(env, "sendMessage", { chat_id: me.id, text: playroom(env) ? ROOM_HELP : HELP });
+    const res = await tg(env, "sendMessage", { chat_id: me.id, text: helpText(env) });
     await setDm(env, me.id, res.ok);
     return res.ok ? null : "Не получилось написать тебе в личку — открой бота и нажми «Старт».";
   },
@@ -2041,6 +2094,52 @@ const ACTIONS = {
       return `${mname(mtype, num)} не отмечена сломанной.`;
     }
     await handoff(env, chatId, mtype, num);
+    return null;
+  },
+
+  async retime(env, chatId, me, admin, body, trail) {
+    const [mtype, num] = machineArg(body);
+    const name = mname(mtype, num);
+    const row = await getMachine(env, chatId, mtype, num);
+    const t = now();
+    if (!row || row.kind !== "run" || row.ends_at <= t) return `${name} сейчас не работает — менять нечего.`;
+    const minutes = parseMinutes(body.time ?? "");
+    if (minutes === null) return `Не понял время. Введи минуты (45), часы с минутами (1:05) или полтора часа как 1,5 — от 1 до ${MAX_MINUTES} минут.`;
+    const starter = starterOf(row);
+    const unlimited = admin || starter === me.id;
+    const editors = editorsOf(row);
+    if (!unlimited && editors.includes(me.id)) return `Ты уже исправлял время на этой программе. Ещё раз может только тот, кто запустил машину, или админ чата.`;
+    if (!unlimited && editors.length >= TIMER_EDITS) return `Время на ${name} уже исправили ${TIMER_EDITS} человека — дальше может только тот, кто запустил машину, или админ чата.`;
+    const planned = row.planned_at ?? row.ends_at;
+    const lo = admin ? 1 : Math.max(1, Math.ceil((planned - TIMER_SHIFT_MINUTES * 60 - t) / 60));
+    const hi = admin ? MAX_MINUTES : Math.floor((Math.min(planned + TIMER_SHIFT_MINUTES * 60, row.started_at + MAX_MINUTES * 60) - t) / 60);
+    if (hi < lo) return `Время на ${name} уже нельзя исправить — напиши админу чата.`;
+    if (minutes < lo || minutes > hi) {
+      return `Можно поставить от ${lo} до ${hi} мин: время меняется не больше чем на ${TIMER_SHIFT_MINUTES} мин от изначального (до ${clock(env, planned)}).`;
+    }
+    const ends = t + minutes * 60;
+    if (Math.round((ends - row.ends_at) / 60) === 0) return `${name} и так закончит в ${clock(env, row.ends_at)}.`;
+    Object.assign(trail, machineTrail(row));
+    Object.assign(trail.details, { minutes, new_ends_at: ends, planned_at: planned, editors });
+    const ok = await changed(
+      env,
+      "UPDATE machines SET ends_at = ?, planned_at = COALESCE(planned_at, ends_at), editors = ?, " +
+        "editor_id = ?, editor_name = ?, editor_username = ?, warned = CASE WHEN ? THEN 0 ELSE warned END " +
+        "WHERE chat_id = ? AND mtype = ? AND num = ? AND started_at = ? AND kind = 'run' AND ends_at = ? AND COALESCE(editors, '') = ?",
+      ends, unlimited ? row.editors ?? null : `,${[...editors, me.id].join(",")},`, me.id, me.name, me.username ?? null, minutes > WARN_MINUTES ? 1 : 0,
+      chatId, mtype, num, row.started_at, row.ends_at, row.editors ?? ""
+    );
+    if (!ok) return `${name} только что изменилась — попробуй ещё раз.`;
+    const nxt = await first(env, "SELECT * FROM nexts WHERE chat_id = ? AND mtype = ? AND num = ?", chatId, mtype, num);
+    const booked = await upcomingBooking(env, chatId, mtype, num, row.user_id);
+    const told = new Map();
+    if (row.user_id) told.set(row.user_id, person(row));
+    if (row.reporter_id != null) told.set(row.reporter_id, person(row, "reporter"));
+    if (nxt) told.set(nxt.user_id, person(nxt));
+    if (booked && booked.at < ends) told.set(booked.user_id, person(booked));
+    told.delete(me.id);
+    const text = `${name} закончит в ${clock(env, ends)} вместо ${clock(env, row.ends_at)} — время исправили по дисплею. Кто: ${await label(env, chatId, me)}.`;
+    for (const [id, p] of told) await nudge(env, chatId, me, p, id === starter ? `${text} Если неверно — исправь в приложении.` : text);
     return null;
   },
 
@@ -2212,7 +2311,7 @@ async function apiAction(request, env) {
   const { chatId, me, admin, section } = await authorize(request, env, "action");
   const body = await readObject(request, API_BODY_MAX);
   const action = typeof body.action === "string" && Object.hasOwn(ACTIONS, body.action) ? ACTIONS[body.action] : null;
-  if (!action || (PLAYROOM_ONLY.has(body.action) && !playroom(env))) throw new ApiError("Некорректный запрос.");
+  if (!action || (PLAYROOM_ONLY.has(body.action) && !playroom(env)) || (LAUNDRY_ONLY.has(body.action) && !laundry(env))) throw new ApiError("Некорректный запрос.");
   const announces = ANNOUNCING.has(body.action) && !admin;
   if (announces) {
     const retry = full(env, "room", me.id);

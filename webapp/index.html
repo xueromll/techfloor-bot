@@ -15,7 +15,9 @@
     --accent-text: var(--tg-theme-button-text-color, #ffffff);
     --danger: var(--tg-theme-destructive-text-color, #d64545);
     --free: #2e9e5b;
-    --run: #d64545;
+    --run: #2f7ed8;
+    --parked: #d94a8c;
+    --busy: #d64545;
     --hold: #c9900f;
     --done: #8e5bd6;
     --loaded: #d6762e;
@@ -42,19 +44,23 @@
   .tile b { font-size: 18px; }
   .tile small { font-size: 11px; color: var(--hint); white-space: nowrap; }
   .tile.free { background: rgba(46, 158, 91, 0.14); border-bottom-color: var(--free); }
-  .tile.run, .tile.parked { background: rgba(214, 69, 69, 0.13); border-bottom-color: var(--run); }
+  .tile.run { background: rgba(47, 126, 216, 0.14); border-bottom-color: var(--run); }
+  .tile.parked { background: rgba(217, 74, 140, 0.14); border-bottom-color: var(--parked); }
   .tile.hold { background: rgba(201, 144, 15, 0.16); border-bottom-color: var(--hold); }
   .tile.done { background: rgba(142, 91, 214, 0.15); border-bottom-color: var(--done); }
   .tile.loaded { background: rgba(214, 118, 46, 0.16); border-bottom-color: var(--loaded); }
   .tile.broken { background: rgba(128, 128, 128, 0.16); border-bottom-color: var(--hint); }
   .tile.broken b { text-decoration: line-through; color: var(--hint); }
-  .tile.booked { outline: 2px dashed var(--hold); outline-offset: -2px; }
+  .tile.booked { outline: 2px dashed var(--busy); outline-offset: -2px; }
   .tile.mine { outline: 2px solid var(--accent); outline-offset: -2px; }
   .legend { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 2px; }
   .legend span, .line { display: flex; align-items: center; gap: 6px; }
   .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
   .dot.free { background: var(--free); }
-  .dot.run, .dot.parked { background: var(--run); }
+  .dot.run { background: var(--run); }
+  .dot.parked { background: var(--parked); }
+  .dot.busy { background: var(--busy); }
+  .dot.booked { background: transparent; border: 2px dashed var(--busy); border-radius: 3px; width: 11px; height: 11px; }
   .dot.hold { background: var(--hold); }
   .dot.done { background: var(--done); }
   .dot.loaded { background: var(--loaded); }
@@ -93,6 +99,37 @@
   .chips { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 6px 0 10px; }
   .chips.six { grid-template-columns: repeat(6, 1fr); }
   .chips.three { grid-template-columns: repeat(3, 1fr); }
+  .chips.two { grid-template-columns: 1fr 1fr; }
+  .chips.two .chip { padding: 12px 8px; display: flex; align-items: center; justify-content: center; text-align: center; }
+  .chip.on { background: var(--accent); color: var(--accent-text); }
+  .card.guide { border: 2px solid var(--accent); }
+  .step { display: flex; gap: 10px; align-items: flex-start; margin-top: 16px; }
+  .step > i { flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--accent-text); font-style: normal; font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+  .step > div { flex: 1; min-width: 0; }
+  .step p { margin: 2px 0 0; }
+  .demo { background: var(--bg); border-radius: 12px; padding: 10px; margin-top: 8px; pointer-events: none; }
+  .demo .wall { grid-template-columns: repeat(4, 1fr); margin: 0; }
+  .demo .chips { margin: 0 0 6px; }
+  .demo .chips:last-child, .demo .btn:last-child { margin-bottom: 0; }
+  .demo .btn { margin-top: 6px; }
+  .demo .chip, .demo .btn { text-align: center; }
+  .demo .tap { box-shadow: 0 0 0 3px var(--accent); }
+  .legend-rows { display: grid; gap: 8px; }
+  .legend-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .legend-row .tile { width: 76px; min-height: 46px; flex: none; padding: 4px 2px; }
+  .legend-row .tile b { font-size: 15px; }
+  .legend-row .mark { width: 76px; flex: none; display: flex; justify-content: center; }
+  .legend-row .mark .day { width: 40px; text-align: center; }
+  .legend-row .mark .badge { margin: 0; }
+  .legend-row .mark .btn { white-space: nowrap; font-size: 12px; padding: 6px 8px; }
+  .demo .fake { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); }
+  .demo .day { text-align: center; }
+  .demo .toggle span { color: var(--text); }
+  .demo .line { cursor: default; padding: 0; }
+  .name-toggle { margin: 0 0 12px; }
+  .name-toggle span { color: var(--text); }
+  .bubble { background: var(--card); border-radius: 12px 12px 12px 4px; padding: 8px 10px; font-size: 14px; }
+  .bubble b { display: block; color: var(--accent); font-size: 13px; }
   .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .total { text-align: center; color: var(--hint); font-size: 13px; margin: 10px 0 0; min-height: 18px; }
   .chip { border: 0; border-radius: 9px; padding: 10px 0; font: inherit; font-weight: 600; background: rgba(128, 128, 128, 0.14); color: var(--text); cursor: pointer; }
@@ -204,6 +241,25 @@ function durationShort(m) {
   return rest ? `${h}ч${rest}` : `${h} ч`;
 }
 
+function timeFields(onChange, onEnter, minutes = 0) {
+  const hours = el("input", { type: "number", inputmode: "numeric", min: 0, max: Math.floor(S.maxMinutes / 60), step: 1, value: Math.floor(minutes / 60) });
+  const mins = el("input", { type: "number", inputmode: "numeric", min: 0, max: 59, step: 1, value: minutes % 60 });
+  const total = () => Math.max(0, Math.min(S.maxMinutes, (Number(hours.value) || 0) * 60 + (Number(mins.value) || 0)));
+  const set = (v) => {
+    hours.value = Math.floor(v / 60);
+    mins.value = v % 60;
+    onChange();
+  };
+  for (const field of [hours, mins]) {
+    field.addEventListener("input", onChange);
+    field.addEventListener("keydown", (e) => { if (e.key === "Enter") onEnter(); });
+  }
+  const row = el("div", { class: "pair" },
+    el("div", {}, el("label", {}, "часы"), hours),
+    el("div", {}, el("label", {}, "минуты"), mins));
+  return { row, total, set };
+}
+
 function btn(text, onclick, kind) {
   return el("button", { class: "btn" + (kind ? " " + kind : ""), onclick }, text);
 }
@@ -244,7 +300,7 @@ async function load() {
     setState(await api("/api/state"));
     if (first && S.dm !== 1 && S.bot) allowDm(true);
   }
-  catch (e) { if (first) failed(S ? `Не получилось показать прачечную: ${e.message}` : e.message); }
+  catch (e) { if (first) failed(S ? `Не получилось показать приложение: ${e.message}` : e.message); }
   finally { loading = false; schedule(); }
 }
 
@@ -334,10 +390,12 @@ function gridCard() {
     walls,
     el("div", { class: "legend hint" },
       el("span", {}, el("i", { class: "dot free" }), "свободна"),
-      el("span", {}, el("i", { class: "dot run" }), "занята"),
+      el("span", {}, el("i", { class: "dot run" }), "работает"),
       el("span", {}, el("i", { class: "dot hold" }), "придержана"),
       el("span", {}, el("i", { class: "dot done" }), "готово, вещи внутри"),
       el("span", {}, el("i", { class: "dot loaded" }), "вещи без программы"),
+      el("span", {}, el("i", { class: "dot parked" }), "переложенные вещи"),
+      S.machines.some((m) => m.t === tab && m.booking) ? el("span", {}, el("i", { class: "dot booked" }), "бронь") : null,
       S.machines.some((m) => m.t === tab && m.status === "broken") ? el("span", {}, el("i", { class: "dot broken" }), "сломана") : null),
     lines.length ? el("div", { class: "lines" }, lines) : null);
 }
@@ -368,6 +426,9 @@ function openMachine(m) {
     const by = marked ? "отметил ты" : `отметил: ${who(m.reporter)}`;
     body.push(el("p", { class: "hint" }, m.owner.id ? `Хозяин нашёлся сам (${by}).` : `Чьи вещи — неизвестно (${by}).`));
   }
+  if (m.status === "run" && m.planned) {
+    body.push(el("p", { class: "hint" }, `Время исправляли по дисплею${m.editor ? `, последний раз — ${isMe(m.editor) ? "ты" : who(m.editor)}` : ""}. Изначально было до ${clock(m.planned)}.`));
+  }
   if (m.booking && isMe(m.booking.user)) {
     body.push(el("p", { class: "hint" }, `Это твоя бронь на ${when(m.booking.at)}. В это время машина будет ждать тебя ${S.claim} мин. Если её уже заняли без бота — займи любую свободную.`));
     body.push(btn("Отменить бронь", () => act({ action: "unbook", id: m.booking.id }), "secondary"));
@@ -376,46 +437,44 @@ function openMachine(m) {
   }
   if (m.status === "free" || (["hold", "done", "loaded"].includes(m.status) && (mine || marked))) {
     const pickOwner = m.status === "free" || m.status === "loaded";
-    const owner = el("select", {},
-      el("option", { value: "me" }, "Мои"),
-      pickOwner ? el("option", { value: "unknown" }, "Не знаю чьи") : null);
-    if (m.status === "loaded" && m.owner.id === 0) owner.value = "unknown";
-    const maxHours = Math.floor(S.maxMinutes / 60);
-    const hours = el("input", { type: "number", inputmode: "numeric", min: 0, max: maxHours, step: 1, value: 0 });
-    const mins = el("input", { type: "number", inputmode: "numeric", min: 0, max: 59, step: 1, value: 0 });
-    const total = () => {
-      const raw = (Number(hours.value) || 0) * 60 + (Number(mins.value) || 0);
-      return Math.max(0, Math.min(S.maxMinutes, raw));
+    const busy = pickOwner && S.machines.some((x) => !(x.t === m.t && x.n === m.n) && x.status === "run" && isMe(x.owner));
+    let owner = !pickOwner ? "me" : m.status === "loaded" && m.owner.id === 0 ? "unknown" : busy ? null : "me";
+    const action = m.status === "free" ? "Занять" : "Запустить программу";
+    const start = btn(action, () => go());
+    const choices = [["me", "Мои вещи"], ["unknown", "Не мои, просто отмечаю"]].map(([v, text]) =>
+      [v, el("button", { class: "chip", onclick: () => { owner = v; paint(); } }, text)]);
+    const hideName = nameToggle();
+    const paint = () => {
+      for (const [v, chip] of choices) chip.className = v === owner ? "chip on" : "chip";
+      hideName.row.style.display = owner === "me" ? "" : "none";
+      start.disabled = !owner;
+      start.textContent = !pickOwner ? action : !owner ? "Выбери, чьи вещи" : `${action}: ${owner === "me" ? "мои вещи" : "не мои"}`;
     };
+    paint();
+    const time = timeFields(() => sync(), () => go());
     const summary = el("p", { class: "total" });
     const sync = () => {
-      const t = total();
+      const t = time.total();
       summary.replaceChildren(t ? `Итого ${duration(t)}, до ${clock(now() + t * 60)}` : "Укажи, сколько осталось по дисплею");
     };
-    const preset = (v) => () => {
-      hours.value = Math.floor(v / 60);
-      mins.value = v % 60;
-      sync();
+    const go = async () => {
+      if (!time.total() || !owner) return;
+      if (owner === "me" && !(await applyName(hideName.box))) return;
+      act({ action: "take", t: m.t, n: m.n, time: String(time.total()), owner });
     };
-    const go = () => {
-      if (!total()) return;
-      act({ action: "take", t: m.t, n: m.n, time: String(total()), owner: owner.value });
-    };
-    for (const field of [hours, mins]) {
-      field.addEventListener("input", sync);
-      field.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
-    }
     sync();
+    if (pickOwner) body.push(
+      el("label", {}, "Чьи вещи в машине?"),
+      el("div", { class: "chips two" }, choices.map(([, chip]) => chip)),
+      busy ? el("p", { class: "hint", style: "margin:0 0 10px" }, "У тебя уже занята другая машина. Это тоже твои вещи или ты отмечаешь чужую стирку?") : null);
     body.push(
+      hideName.row,
       el("label", {}, "Сколько осталось по дисплею машины?"),
       el("div", { class: "chips three" }, [30, 45, 60, 90, 120, 150].map((v) =>
-        el("button", { class: "chip", onclick: preset(v) }, durationShort(v)))),
-      el("div", { class: "pair" },
-        el("div", {}, el("label", {}, "часы"), hours),
-        el("div", {}, el("label", {}, "минуты"), mins)),
+        el("button", { class: "chip", onclick: () => time.set(v) }, durationShort(v)))),
+      time.row,
       summary,
-      el("label", { style: "margin-top:10px" }, "Чьи вещи?"), owner,
-      btn(m.status === "free" ? "Занять" : "Запустить программу", go));
+      start);
     if (m.status === "free") {
       body.push(el("p", { class: "hint", style: "margin:10px 0 0" }, "В машине лежат чьи-то вещи, а программа не запущена? Отметь это — машина будет занята, пока вещи не заберут, а хозяин сможет нажать «Это мои вещи»."));
       body.push(btn("Тут чужие вещи, без программы", () => act({ action: "load", t: m.t, n: m.n }), "secondary"));
@@ -424,6 +483,7 @@ function openMachine(m) {
   if (m.status !== "free" && m.status !== "hold" && m.owner.id === 0 && !marked) {
     body.push(btn("Это мои вещи", () => act({ action: "claim", t: m.t, n: m.n }), "secondary"));
   }
+  if (m.status === "run") body.push(btn("Время на дисплее другое", () => openRetime(m), "secondary"));
   if (m.status === "run" && ((m.reporter ? marked : mine) || admin)) body.push(btn("Освободить", () => act({ action: "free", t: m.t, n: m.n }), "danger"));
   if (leftover && (mine || marked || admin)) body.push(btn("Вещи забраны", () => act({ action: "free", t: m.t, n: m.n })));
   if (leftover && !mine) body.push(btn("Вещи переложены — указать куда", () => openMove(m), "secondary"));
@@ -438,6 +498,52 @@ function openMachine(m) {
   }
   if (admin) body.push(btn("Отметить сломанной", () => openBroken(m), "danger"));
   openSheet(mname(m), body);
+}
+
+function openRetime(m) {
+  const admin = S.me.admin;
+  const starter = m.reporter ? isMe(m.reporter) : isMe(m.owner);
+  const unlimited = admin || starter;
+  const planned = m.planned || m.ends;
+  const lo = admin ? 1 : Math.max(1, Math.ceil((planned - S.timerShift * 60 - now()) / 60));
+  const hi = admin ? S.maxMinutes : Math.floor((Math.min(planned + S.timerShift * 60, m.started + S.maxMinutes * 60) - now()) / 60);
+  const body = [el("p", {}, `Сейчас до ${clock(m.ends)}, ${left(m.ends)}.`)];
+  const stop = !unlimited && m.editedByMe ? "Ты уже исправлял время на этой программе."
+    : !unlimited && m.edits >= S.timerEdits ? `Время уже исправили ${S.timerEdits} человека.`
+    : hi < lo ? "Время уже нельзя исправить." : null;
+  if (stop) {
+    body.push(el("p", { class: "hint" }, stop),
+      el("p", { class: "hint" }, "Дальше может только тот, кто запустил машину, или админ чата."),
+      btn("← Назад", () => openMachine(m), "secondary"));
+    openSheet(`${mname(m)}: время`, body);
+    return;
+  }
+  const time = timeFields(() => sync(), () => go(), minutesLeft(m.ends));
+  const summary = el("p", { class: "total" });
+  const save = btn("Сохранить время", () => go());
+  const sync = () => {
+    const t = time.total();
+    const ok = t >= lo && t <= hi;
+    save.disabled = !ok;
+    summary.replaceChildren(!t ? "Укажи, сколько осталось по дисплею" : ok ? `До ${clock(now() + t * 60)}` : `Можно от ${duration(lo)} до ${duration(hi)}`);
+  };
+  const go = () => {
+    const t = time.total();
+    if (t >= lo && t <= hi) act({ action: "retime", t: m.t, n: m.n, time: String(t) });
+  };
+  sync();
+  const rules = admin
+    ? "Ты админ — ограничений нет."
+    : `Машина пересчитала время? Исправь его по дисплею — не дальше ${S.timerShift} мин от изначального (до ${clock(planned)}).` +
+      (starter ? "" : " Каждый может исправить время на программе один раз.");
+  body.push(
+    el("label", {}, "Сколько сейчас осталось по дисплею машины?"),
+    time.row,
+    summary,
+    el("p", { class: "hint", style: "margin:0 0 10px" }, `${rules} Все видят, кто исправил время, а хозяин вещей и те, кто ждёт машину, получат уведомление.`),
+    save,
+    btn("← Назад", () => openMachine(m), "secondary"));
+  openSheet(`${mname(m)}: время`, body);
 }
 
 function openBroken(m) {
@@ -519,6 +625,139 @@ function typeCard() {
   return el("section", { class: "card" }, el("h2", {}, "Очередь и бронь"), parts);
 }
 
+const GUIDES = {
+  laundry: { pitch: "Покажу за полминуты, как отметить свою стирку и получить сообщение, когда она закончится.", open: () => openGuide() },
+  playroom: { pitch: "Покажу за полминуты, как забронировать время или прийти на чужое событие.", open: () => openRoomGuide() },
+};
+const guideSeen = {};
+for (const kind of Object.keys(GUIDES)) {
+  try { guideSeen[kind] = localStorage.getItem("guide-" + kind) === "1"; }
+  catch (e) { guideSeen[kind] = false; }
+}
+
+function markGuide(kind) {
+  guideSeen[kind] = true;
+  try { localStorage.setItem("guide-" + kind, "1"); }
+  catch (e) {}
+}
+
+function guideHead(kind, title) {
+  return el("div", { class: "row" }, el("h1", {}, title), guideSeen[kind] ? el("button", { class: "x", onclick: GUIDES[kind].open }, "Как пользоваться?") : null);
+}
+
+function guideCard(kind) {
+  if (guideSeen[kind]) return null;
+  return el("section", { class: "card guide" },
+    el("div", { class: "row" }, el("h2", { style: "margin:0" }, "Первый раз здесь?"), el("button", { class: "x", onclick: () => { markGuide(kind); render(); } }, "Скрыть")),
+    el("p", { class: "hint", style: "margin:6px 0 0" }, GUIDES[kind].pitch),
+    btn("Как пользоваться", GUIDES[kind].open));
+}
+
+function guideBubble(text) {
+  return el("div", { class: "bubble" }, el("b", {}, "Бот"), text);
+}
+
+function dmHint() {
+  return S.dm === 1 ? null : "Для этого разреши боту писать тебе — кнопка «Разрешить» вверху приложения.";
+}
+
+function demoTile(status, n, sub, tap) {
+  return el("div", { class: `tile ${status}${tap ? " tap" : ""}` }, el("b", {}, n), el("small", {}, sub));
+}
+
+function guideStep(n, title, text, demo) {
+  return el("div", { class: "step" }, el("i", {}, n),
+    el("div", {}, el("b", {}, title), text ? el("p", { class: "hint" }, text) : null, demo ? el("div", { class: "demo" }, demo) : null));
+}
+
+function openGuide() {
+  markGuide("laundry");
+  render();
+  const name = S.types[tab].name;
+  openSheet("Как пользоваться", [
+    el("p", { class: "hint" }, "Отмечай машины здесь — тогда все видят, что свободно, и никому не нужно спускаться проверять."),
+    guideStep(1, "Запустил стирку — нажми на номер машины", "Зелёные — свободны. Что значат остальные цвета — в конце инструкции.",
+      el("div", { class: "wall" }, demoTile("run", 1, "40 мин"), demoTile("free", 2, "свободна"), demoTile("free", 3, "свободна", true), demoTile("done", 4, "готово"))),
+    guideStep(2, "Выбери «Мои вещи» и время с дисплея машины", null, [
+      el("div", { class: "chips two" }, el("div", { class: "chip on" }, "Мои вещи"), el("div", { class: "chip" }, "Не мои, просто отмечаю")),
+      el("div", { class: "chips three" }, [30, 60, 90].map((v) => el("div", { class: v === 60 ? "chip on" : "chip" }, durationShort(v)))),
+      el("div", { class: "btn" }, "Занять: мои вещи")]),
+    guideStep(3, "Машина пересчитала время — исправь его",
+      `Нажми на номер машины и выбери «Время на дисплее другое». Это может любой, кто стоит рядом: каждый — один раз за программу, всего не больше ${S.timerEdits} человек, и не дальше ${S.timerShift} мин от изначального времени. Кто запустил стирку, исправляет сколько нужно. Лимиты обнуляются, когда в машине запускают новую программу. Все видят, кто исправил время, а хозяину вещей придёт уведомление.`,
+      [el("div", { class: "wall" }, demoTile("run", 3, "55 мин", true)), el("div", { class: "btn secondary" }, "Время на дисплее другое")]),
+    guideStep(4, "Бот напишет тебе, когда стирка закончится", dmHint(),
+      guideBubble(`${name} 3 закончила — забери бельё и отметь в приложении «Вещи забраны».`)),
+    guideStep(5, "Забрал вещи — нажми «Вещи забраны»", "Так другие сразу увидят, что машина свободна.",
+      [el("div", { class: "wall" }, demoTile("done", 3, "готово", true)), el("div", { class: "btn" }, "Вещи забраны")]),
+    guideStep(6, "Видишь занятую машину, которой нет в приложении?", "Нажми на её номер и выбери «Не мои, просто отмечаю» или «Тут чужие вещи, без программы». Это тоже помогает всем.",
+      el("div", { class: "chips two" }, el("div", { class: "chip" }, "Мои вещи"), el("div", { class: "chip on" }, "Не мои, просто отмечаю"))),
+    guidePrivacy(7, "Когда занимаешь машину,", el("div", { class: "chips two" }, el("div", { class: "chip on" }, "Мои вещи"), el("div", { class: "chip" }, "Не мои, просто отмечаю")), "run", `${name} 3 — Аноним, осталось ~40 мин`),
+    el("h2", { style: "margin:20px 0 4px" }, "Что значат цвета"),
+    el("div", { class: "demo legend-rows" }, [
+      ["free", "свободна", "Свободна — можно занимать."],
+      ["run", "40 мин", "Идёт стирка. На плитке — сколько осталось."],
+      ["done", "готово", "Программа закончилась, вещи ещё внутри."],
+      ["loaded", "вещи", "Внутри чьи-то вещи, программа не запущена."],
+      ["parked", "вещи", "Сюда переложили вещи из другой машины."],
+      ["hold", "ждёт", `Придержана для следующего в очереди или по брони — ждёт его ${S.claim} мин.`],
+      ["broken", "сломана", "Сломана — занять нельзя, пока не починят."],
+      ["free booked", "бронь 18:00", "Пунктирная рамка — машину забронировали на это время."],
+    ].map(([status, sub, text], i) => el("div", { class: "legend-row" }, demoTile(status, i + 1, sub), el("span", {}, text)))),
+    btn("Понятно", closeSheet),
+  ]);
+}
+
+function demoDays(marks) {
+  return el("div", { class: "cal" },
+    ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((w) => el("span", { class: "wd" }, w)),
+    marks.map((m, i) => el("div", { class: "day" + (m ? " " + m : "") }, 13 + i)));
+}
+
+function demoField(label, value) {
+  return el("div", {}, el("label", {}, label), el("div", { class: "fake" }, value));
+}
+
+function openRoomGuide() {
+  markGuide("playroom");
+  render();
+  const room = R().name;
+  const roomLow = room.toLowerCase();
+  const legendMark = (mark, text) => el("div", { class: "legend-row" }, el("div", { class: "mark" }, mark), el("span", {}, text));
+  openSheet("Как пользоваться", [
+    el("p", { class: "hint" }, `Бронируй здесь — тогда все видят, когда ${roomLow} занята, и никто не придёт в одно время с тобой.`),
+    guideStep(1, "Выбери день в календаре", "Точка под числом — в этот день уже есть брони.",
+      demoDays(["today", "", "has", "sel", "", "has open", ""])),
+    guideStep(2, "Посмотри свободное время и нажми «Забронировать»", null, [
+      el("div", { class: "row" }, el("div", {}, el("b", {}, "18:00–21:00"), roomBadge({ public: false })), el("span", { class: "hint" }, "Аня — настолки")),
+      el("p", { class: "hint", style: "margin:6px 0 0" }, "Свободно: 10:00–18:00, 21:00–24:00"),
+      el("div", { class: "btn" }, "Забронировать")]),
+    guideStep(3, "Выбери время и тип брони", `Шаг — ${R().step} мин, одна бронь — до ${R().maxHours} ч.`, [
+      el("div", { class: "pair" }, demoField("Начало", "19:00"), demoField("Конец", "21:00")),
+      el("div", { class: "toggle", style: "margin-top:10px" }, el("input", { type: "checkbox", checked: "checked", tabindex: "-1" }), el("span", {}, "Открытое событие — может прийти любой")),
+      el("p", { class: "hint", style: "margin:6px 0 0" }, `Закрытая — ${roomLow} просто занята за тобой. Открытая — в чате позовут всех, и любой сможет записаться.`)]),
+    guideStep(4, "Накануне бот спросит, нужна ли ещё бронь", (dmHint() ? dmHint() + " " : "") + "Если планы изменились — отмени, чтобы время досталось другим. Перед началом бот напомнит ещё раз.", [
+      guideBubble(`Напоминание: ${room} забронирована за тобой на завтра — 19:00–21:00, настолки. Бронь ещё нужна?`),
+      el("div", { class: "chips two", style: "margin-top:6px" }, el("div", { class: "chip" }, "Да, бронь нужна"), el("div", { class: "chip" }, "Нет, отменить бронь"))]),
+    guideStep(5, "Хочешь на чужое событие — нажми «Я приду»", "Организатор увидит, сколько людей придёт. Передумал — нажми «Не приду».",
+      el("div", { class: "row" },
+        el("div", {}, el("b", {}, "Суббота, 19:00–22:00"), el("div", { class: "hint" }, "Дима — турнир по мафии"), el("div", { class: "hint" }, "Идут 3 из 10")),
+        el("div", { class: "btn small" }, "Я приду"))),
+    guidePrivacy(6, "Когда бронируешь,", el("div", { class: "toggle" }, el("input", { type: "checkbox", tabindex: "-1" }), el("span", {}, "Открытое событие — может прийти любой")), "busy", `Сейчас занята до 21:00: Аноним — настолки.`),
+    el("h2", { style: "margin:20px 0 4px" }, "Что значат метки"),
+    el("div", { class: "demo legend-rows" }, [
+      legendMark(el("div", { class: "day has" }, 15), "Жёлтая точка — в этот день есть брони."),
+      legendMark(el("div", { class: "day has open" }, 18), "Зелёная точка — в этот день открытое событие, прийти может любой."),
+      legendMark(el("div", { class: "day sel" }, 16), "Выбранный день — его брони показаны ниже календаря."),
+      legendMark(roomBadge({ public: true }), "Открытое событие — можно записаться кнопкой «Я приду»."),
+      legendMark(roomBadge({ public: false }), `Закрытая бронь — ${roomLow} занята за этим человеком.`),
+      legendMark(el("div", { class: "btn small", style: "opacity:0.5" }, "Мест нет"), "На открытое событие записалось максимум людей."),
+      legendMark(el("i", { class: "dot busy" }), `Красная точка вверху — ${roomLow} занята прямо сейчас.`),
+      legendMark(el("i", { class: "dot free" }), "Зелёная — сейчас свободна или идёт открытое событие."),
+    ]),
+    btn("Понятно", closeSheet),
+  ]);
+}
+
 function mineCard() {
   const mine = S.machines.filter((m) => m.status !== "broken" && isMine(m));
   if (!mine.length) return null;
@@ -548,6 +787,31 @@ function adminCard(kind) {
     btn(laundry ? "Сбросить всё в прачечной" : "Отменить все брони игровой", () => confirmAct(
       laundry ? "Точно сбросить все статусы прачечной?" : "Точно отменить все брони игровой?",
       { action: laundry ? "admin_reset_laundry" : "admin_reset_room" }), "danger"));
+}
+
+function nameToggle() {
+  const box = el("input", { type: "checkbox" });
+  box.checked = !!S.me.hidden;
+  return { box, row: el("label", { class: "toggle name-toggle" }, box, el("span", {}, "Не показывать моё имя")) };
+}
+
+async function applyName(box) {
+  if (box.checked === !!S.me.hidden) return true;
+  try {
+    await api("/api/action", { action: "privacy", hidden: box.checked });
+    S.me.hidden = box.checked;
+    return true;
+  } catch (e) {
+    warn(e.message);
+    return false;
+  }
+}
+
+function guidePrivacy(n, where, demo, dot, example) {
+  return guideStep(n, "Не хочешь, чтобы видели твоё имя?",
+    `${where} поставь галочку «Не показывать моё имя». Тогда в приложении и в сообщениях бота в чате вместо тебя будет «Аноним». Админы чата имя видят.`,
+    [demo, el("div", { class: "toggle", style: "margin-top:8px" }, el("input", { type: "checkbox", checked: "checked", tabindex: "-1" }), el("span", {}, "Не показывать моё имя")),
+      el("div", { class: "line", style: "margin-top:8px" }, el("span", { class: "dot " + dot }), example)]);
 }
 
 function privacyCard() {
@@ -655,7 +919,7 @@ function roomStatusCard() {
       ? `Сейчас идёт открытое событие до ${when(cur.ends)}: ${roomWho(cur)}. Можно присоединиться!`
       : `Сейчас занята до ${when(cur.ends)}: ${roomWho(cur)}.`
     : `Сейчас свободна.${next ? ` Следующая бронь — ${dayTitle(roomDayOf(next.starts))}, ${clock(next.starts)}.` : ""}`;
-  return el("section", { class: "card" }, el("p", { style: "margin:0" }, el("span", { class: "dot " + (cur ? (cur.public ? "free" : "run") : "free"), style: "display:inline-block;margin-right:8px" }), text));
+  return el("section", { class: "card" }, el("p", { style: "margin:0" }, el("span", { class: "dot " + (cur ? (cur.public ? "free" : "busy") : "free"), style: "display:inline-block;margin-right:8px" }), text));
 }
 
 function eventsCard() {
@@ -771,6 +1035,8 @@ function openRoomBook(d, edit = null) {
   open.addEventListener("change", showOpen);
   showOpen();
   const title = edit ? `Изменить бронь: ${dayTitle(d)}` : `${R().name}: ${dayTitle(d)}`;
+  const hideName = nameToggle();
+  hideName.row.style.marginTop = "14px";
   const form = [
     el("label", {}, "Начало"), startSel,
     el("label", { style: "margin-top:10px" }, "Конец"), endSel,
@@ -778,6 +1044,7 @@ function openRoomBook(d, edit = null) {
     el("label", { class: "toggle", style: "margin-top:14px" }, open, el("span", { style: "color:var(--text);font-size:15px" }, "Открытое событие — может прийти любой")),
     openHint,
     capacityBox,
+    hideName.row,
     btn(edit ? "Сохранить" : "Забронировать", () => confirmRoomBook()),
   ];
   const confirmRoomBook = () => {
@@ -796,13 +1063,17 @@ function openRoomBook(d, edit = null) {
       line("Зачем", why || "не указано"),
       line("Бронь", open.checked ? "открытое событие — может прийти любой" : "закрытая — игровая просто занята за тобой"),
       open.checked ? line("Ждёшь людей", people === null ? "без ограничения" : `до ${people}`) : null,
+      line("Имя", hideName.box.checked ? "скрыто — другие увидят «Аноним»" : "видно всем"),
       edit && edit.public && !open.checked && edit.going.length
         ? el("p", { class: "hint", style: "margin:10px 0 0" }, `Записавшиеся (${edit.going.length}) будут сняты с события, им придёт сообщение.`)
         : null,
-      btn(edit ? "Да, сохранить" : "Да, бронирую", () => act({
-        action: edit ? "room_edit" : "room_book", id: edit ? edit.id : undefined,
-        starts: Number(startSel.value), ends: Number(endSel.value), reason: why, public: open.checked, capacity: people,
-      })),
+      btn(edit ? "Да, сохранить" : "Да, бронирую", async () => {
+        if (!(await applyName(hideName.box))) return;
+        act({
+          action: edit ? "room_edit" : "room_book", id: edit ? edit.id : undefined,
+          starts: Number(startSel.value), ends: Number(endSel.value), reason: why, public: open.checked, capacity: people,
+        });
+      }),
       btn("Нет, изменить", () => openSheet(title, form), "secondary"),
     ]);
   };
@@ -813,7 +1084,10 @@ function laundryView() {
   const counts = Object.entries(S.types).map(([t, cfg]) =>
     `${cfg.many} ${S.machines.filter((m) => m.t === t && m.status === "free").length} из ${S.numbers.length}`);
   return [
-    el("header", { class: "head" }, el("h1", {}, "Прачечная"), el("div", { class: "hint" }, "Свободно: " + counts.join(", "))),
+    el("header", { class: "head" },
+      guideHead("laundry", "Прачечная"),
+      el("div", { class: "hint" }, "Свободно: " + counts.join(", "))),
+    guideCard("laundry"),
     el("div", { class: "tabs" }, Object.entries(S.types).map(([t, cfg]) =>
       el("button", { class: t === tab ? "tab on" : "tab", onclick: () => { tab = t; render(); } }, cfg.title))),
     gridCard(),
@@ -826,7 +1100,8 @@ function laundryView() {
 
 function roomView() {
   return [
-    el("header", { class: "head" }, el("h1", {}, R().name)),
+    el("header", { class: "head" }, guideHead("playroom", R().name)),
+    guideCard("playroom"),
     roomStatusCard(),
     eventsCard(),
     calendarCard(),
@@ -855,21 +1130,24 @@ function dmCard() {
   return el("section", { class: "card" },
     el("b", {}, "Включи личные уведомления"),
     el("p", { class: "hint", style: "margin:6px 0 0" },
-      (ask ? "Разреши боту писать тебе" : "Нажми «Старт» в чате с ботом") + (S.room
+      (ask ? "Разреши боту писать тебе" : "Нажми «Старт» в чате с ботом") + (!S.laundry
+        ? " — тогда он сможет писать тебе лично: когда скоро начнётся твоя бронь игровой или событие, на которое ты идёшь, или нужно подтвердить бронь. Без этого напоминания придут в общий чат."
+        : S.room
         ? " — тогда он сможет писать тебе лично: когда стирка заканчивается, подошла твоя очередь или бронь, твои вещи переложили или нужно подтвердить бронь игровой. Без этого напоминания придут в общий чат."
         : " — тогда он сможет писать тебе лично: когда стирка заканчивается, подошла твоя очередь или бронь, или твои вещи переложили. Без этого напоминания придут в общий чат.")),
     btn(ask ? "Разрешить" : "Открыть бота", () => allowDm(false), "secondary"));
 }
 
 function render() {
-  if (!section) section = S.section;
-  const switcher = S.room && el("div", { class: "tabs" },
-    [["laundry", "Прачечная"], ["playroom", R().name]].map(([k, label]) =>
+  const views = [S.laundry && ["laundry", "Прачечная"], S.room && ["playroom", R().name]].filter(Boolean);
+  if (!views.some(([k]) => k === section)) section = views.some(([k]) => k === S.section) ? S.section : views[0][0];
+  const switcher = views.length > 1 && el("div", { class: "tabs" },
+    views.map(([k, label]) =>
       el("button", { class: k === section ? "tab on" : "tab", onclick: () => { section = k; render(); } }, label)));
   app.replaceChildren(...[
     switcher,
     dmCard(),
-    ...(S.room && section === "playroom" ? roomView() : laundryView()),
+    ...(section === "playroom" ? roomView() : laundryView()),
     privacyCard(),
     problemCard(),
   ].filter(Boolean));

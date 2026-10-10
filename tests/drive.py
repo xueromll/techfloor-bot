@@ -89,5 +89,45 @@ st, d = api(BORYA, {"action": "fixed", "t": "w", "n": 4}); assert "только 
 st, d = api(ANYA, {"action": "fixed", "t": "w", "n": 4}); assert st == 200 and m(d, "w", 4)["status"] == "free", m(d, "w", 4)
 assert "Не работают" not in one("SELECT text FROM boards WHERE chat_id = ?", CH)
 wipe()
+print("--- время на дисплее изменилось: исправить может любой, но каждый один раз и в пределах лимитов")
+st, d = api(BORYA, {"action": "take", "t": "w", "n": 1, "time": "40"}); assert st == 200, d
+planned = m(d, "w", 1)["ends"]
+st, d = api(VOVA, {"action": "next", "t": "w", "n": 1}); assert st == 200, d
+st, d = api(GALYA, {"action": "retime", "t": "w", "n": 1, "time": "0"}); assert "Не понял время" in err(d), d
+sql("UPDATE machines SET warned = 1 WHERE mtype = 'w' AND num = 1")
+before = len(sent())
+st, d = api(GALYA, {"action": "retime", "t": "w", "n": 1, "time": "55"}); assert st == 200, d
+w1 = m(d, "w", 1)
+assert w1["edits"] == 1 and w1["editedByMe"] and w1["editor"]["id"] == 4 and abs(w1["planned"] - planned) < 1, w1
+assert abs(w1["ends"] - time.time() - 55 * 60) < 30, w1
+assert one("SELECT warned FROM machines WHERE mtype = 'w' AND num = 1") == 0
+told = [x for x in sent()[before:] if x["chat_id"] == 2 and "Стиралка 1 закончит в" in x["text"]]
+assert told and "Если неверно" in told[0]["text"] and "galya" in told[0]["text"], sent()[before:]
+st, d = api(GALYA, {"action": "retime", "t": "w", "n": 1, "time": "50"}); assert "уже исправлял" in err(d), d
+st, d = api(VOVA, {"action": "retime", "t": "w", "n": 1, "time": "55"}); assert "и так закончит" in err(d), d
+st, d = api(VOVA, {"action": "retime", "t": "w", "n": 1, "time": "120"}); assert "Можно поставить от 1 до" in err(d), d
+st, d = api(VOVA, {"action": "retime", "t": "w", "n": 1, "time": "90"}); assert st == 200 and m(d, "w", 1)["edits"] == 2, d
+_, third = fresh("Третий")
+st, d = api(third, {"action": "retime", "t": "w", "n": 1, "time": "30"}); assert st == 200 and m(d, "w", 1)["edits"] == 3, d
+_, fourth = fresh("Четвёртый")
+st, d = api(fourth, {"action": "retime", "t": "w", "n": 1, "time": "35"}); assert "уже исправили 3 человека" in err(d), d
+print("--- кто запустил, исправляет сколько угодно (в пределах ±60 мин), админ — без ограничений")
+for minutes in ("45", "50"):
+    st, d = api(BORYA, {"action": "retime", "t": "w", "n": 1, "time": minutes}); assert st == 200, d
+w1 = m(d, "w", 1); assert w1["edits"] == 3 and w1["editor"]["id"] == 2 and abs(w1["planned"] - planned) < 1, w1
+st, d = api(BORYA, {"action": "retime", "t": "w", "n": 1, "time": "150"}); assert "Можно поставить" in err(d), d
+st, d = api(ANYA, {"action": "retime", "t": "w", "n": 1, "time": "200"}); assert st == 200, d
+assert abs(m(d, "w", 1)["ends"] - time.time() - 200 * 60) < 30, m(d, "w", 1)
+print("--- закончившую программу нельзя «продлить»; у отмеченной машины без лимита правит отметивший")
+sql("UPDATE machines SET ends_at = ? WHERE mtype = 'w' AND num = 1", time.time() - 1); cron()
+st, d = api(BORYA, {"action": "retime", "t": "w", "n": 1, "time": "30"}); assert "сейчас не работает" in err(d), d
+st, d = api(GALYA, {"action": "retime", "t": "w", "n": 3, "time": "60"}); assert "сейчас не работает" in err(d), d
+st, d = api(GALYA, {"action": "take", "t": "w", "n": 2, "time": "40", "owner": "unknown"}); assert st == 200, d
+st, d = api(VOVA, {"action": "claim", "t": "w", "n": 2}); assert st == 200, d
+st, d = api(VOVA, {"action": "retime", "t": "w", "n": 2, "time": "60"}); assert st == 200 and m(d, "w", 2)["edits"] == 1, d
+st, d = api(VOVA, {"action": "retime", "t": "w", "n": 2, "time": "50"}); assert "уже исправлял" in err(d), d
+for minutes in ("30", "35"):
+    st, d = api(GALYA, {"action": "retime", "t": "w", "n": 2, "time": minutes}); assert st == 200 and m(d, "w", 2)["edits"] == 1, d
+wipe()
 
 print("ALL CF TESTS OK")

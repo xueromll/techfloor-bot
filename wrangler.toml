@@ -17,6 +17,7 @@ APP_SHORT_NAME = "techfloor"
 TZ_NAME = "Asia/Yekaterinburg"
 ROOM_REMIND_HOUR = "18"
 PLAYROOM = "off"
+LAUNDRY = "on"
 ALLOWED_CHATS = "-1003698238682"
 OWNER_ID = "970027103"
 
