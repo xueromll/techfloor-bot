@@ -8,7 +8,7 @@
 (function () {
   var params = {};
   try { params = JSON.parse(sessionStorage.getItem("tgParams")) || {}; } catch (e) {}
-  new URLSearchParams(location.hash.slice(1)).forEach(function (v, k) { params[k] = v; });
+  new URLSearchParams(location.hash.slice(1)).forEach(function (v, k) { if (k.indexOf("tgWebApp") === 0) params[k] = v; });
   try { sessionStorage.setItem("tgParams", JSON.stringify(params)); } catch (e) {}
   var iframe = window.parent != null && window.parent !== window;
   var version = params.tgWebAppVersion || "6.0";
@@ -152,7 +152,7 @@
     var w = window.Telegram.WebApp;
     w.ready();
     w.expand();
-    var device = "Telegram " + w.platform + " " + w.version + "; " +
+    var device = (w.platform == "unknown" ? "Браузер" : "Telegram " + w.platform + " " + w.version) + "; " +
       (document.getElementById("app") ? "" : "страница загрузилась не до конца; ") + navigator.userAgent;
     boot.removeAttribute("id");
     boot.innerHTML = "";
@@ -182,13 +182,19 @@
 </script>
 <style>
   :root {
-    --bg: var(--tg-theme-secondary-bg-color, #f1f1f4);
-    --card: var(--tg-theme-bg-color, #ffffff);
-    --text: var(--tg-theme-text-color, #111111);
-    --hint: var(--tg-theme-hint-color, #8a8a8e);
-    --accent: var(--tg-theme-button-color, #2481cc);
+    --web-bg: #f1f1f4;
+    --web-card: #ffffff;
+    --web-text: #111111;
+    --web-hint: #8a8a8e;
+    --web-accent: #2481cc;
+    --web-danger: #d64545;
+    --bg: var(--tg-theme-secondary-bg-color, var(--web-bg));
+    --card: var(--tg-theme-bg-color, var(--web-card));
+    --text: var(--tg-theme-text-color, var(--web-text));
+    --hint: var(--tg-theme-hint-color, var(--web-hint));
+    --accent: var(--tg-theme-button-color, var(--web-accent));
     --accent-text: var(--tg-theme-button-text-color, #ffffff);
-    --danger: var(--tg-theme-destructive-text-color, #d64545);
+    --danger: var(--tg-theme-destructive-text-color, var(--web-danger));
     --free: #2e9e5b;
     --run: #2f7ed8;
     --parked: #d94a8c;
@@ -197,6 +203,16 @@
     --done: #8e5bd6;
     --loaded: #d6762e;
     --line: rgba(128, 128, 128, 0.18);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --web-bg: #1c1c1e;
+      --web-card: #2c2c2e;
+      --web-text: #f2f2f7;
+      --web-hint: #98989f;
+      --web-accent: #3e88f7;
+      --web-danger: #ff5c5c;
+    }
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--bg); color: var(--text); }
@@ -250,6 +266,7 @@
   .btn.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
   .btn.small { width: auto; padding: 7px 12px; margin: 0; font-size: 14px; }
   .btn:disabled { opacity: 0.5; }
+  a.btn { text-align: center; text-decoration: none; }
   input { width: 100%; font: inherit; font-size: 20px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); text-align: center; }
   select { width: 100%; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
   textarea { display: block; width: 100%; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); resize: vertical; }
@@ -323,6 +340,7 @@
 <script>
 const tg = window.Telegram.WebApp;
 const initData = tg.initData;
+const web = !initData && tg.platform === "unknown";
 const app = document.getElementById("app");
 const sheet = document.getElementById("sheet");
 let S = null;
@@ -334,6 +352,7 @@ let skew = 0;
 let busy = false;
 let loading = false;
 let poll = null;
+let signedOut = false;
 
 function el(tag, props, ...children) {
   const node = document.createElement(tag);
@@ -423,7 +442,12 @@ async function api(path, body) {
   } finally {
     clearTimeout(timer);
   }
-  if (!res.ok || data.error) throw new Error(data.error || "Сервер не отвечает, попробуй ещё раз.");
+  if (!res.ok || data.error) {
+    const err = new Error(data.error || "Сервер не отвечает, попробуй ещё раз.");
+    err.status = res.status;
+    err.bot = data.bot;
+    throw err;
+  }
   return data;
 }
 
@@ -441,8 +465,54 @@ async function load() {
     setState(await api("/api/state"));
     if (first && S.dm !== 1 && S.bot) allowDm(true);
   }
-  catch (e) { if (first) failed(S ? `Не получилось показать приложение: ${e.message}` : e.message); }
+  catch (e) {
+    if (web && e.status === 401) signIn(/\/login/.test(e.message) ? e.message : null, e.bot);
+    else if (first) failed(S ? `Не получилось показать приложение: ${e.message}` : e.message);
+  }
   finally { loading = false; schedule(); }
+}
+
+function signIn(note, bot) {
+  signedOut = true;
+  S = null;
+  clearTimeout(poll);
+  closeSheet();
+  app.replaceChildren(el("section", { class: "card" },
+    el("h1", { style: "margin:0 0 10px" }, "Техэтаж"),
+    note ? el("p", {}, note) : null,
+    el("p", { class: "hint" }, "Это то же приложение прачечной, что и в Telegram, только в браузере. Войти можно через бота: он пришлёт ссылку для входа. Ссылка работает недолго и только один раз."),
+    bot ? el("a", { class: "btn", href: `https://t.me/${bot}?start=login`, target: "_blank", rel: "noopener" }, "Получить ссылку в Telegram") : null,
+    el("p", { class: "hint", style: "margin:10px 0 0" }, bot ? `Или отправь боту @${bot} команду /login.` : "Отправь боту команду /login.")));
+}
+
+async function signInWithLink(token) {
+  history.replaceState(null, "", location.pathname + location.search);
+  try {
+    await api("/api/login", { token });
+  } catch (e) {
+    signIn(e.message, e.bot);
+    return;
+  }
+  start();
+}
+
+async function logout() {
+  const bot = S && S.bot;
+  try {
+    await api("/api/logout", {});
+  } catch (e) {
+    warn(e.message);
+    return;
+  }
+  signIn(null, bot);
+}
+
+function accountCard() {
+  if (!web) return null;
+  return el("section", { class: "card" },
+    el("div", { class: "row" },
+      el("span", { class: "hint" }, "Ты вошёл как ", el("b", { style: "color:var(--text)" }, who(S.me))),
+      el("button", { class: "btn small secondary", onclick: logout }, "Выйти")));
 }
 
 function failed(text) {
@@ -452,7 +522,7 @@ function failed(text) {
 
 function schedule() {
   clearTimeout(poll);
-  if (document.hidden) return;
+  if (document.hidden || signedOut) return;
   const ticking = !!S && S.machines.some((m) => m.status === "run" || m.status === "hold");
   poll = setTimeout(load, ticking ? 15000 : 45000);
 }
@@ -466,7 +536,8 @@ async function act(body, done) {
     if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
     if (done) warn(done);
   } catch (e) {
-    warn(e.message);
+    if (web && e.status === 401) signIn(e.message, e.bot);
+    else warn(e.message);
   } finally {
     busy = false;
   }
@@ -1325,7 +1396,7 @@ function canAskDm() {
 
 function openBot() {
   const link = `https://t.me/${S.bot}?start=app`;
-  if (tg && tg.openTelegramLink) tg.openTelegramLink(link); else window.open(link);
+  if (!web && tg && tg.openTelegramLink) tg.openTelegramLink(link); else window.open(link, "_blank", "noopener");
 }
 
 function allowDm(auto) {
@@ -1359,20 +1430,28 @@ function render() {
     ...(section === "playroom" ? roomView() : laundryView()),
     privacyCard(),
     problemCard(),
+    accountCard(),
   ].filter(Boolean));
+}
+
+function start() {
+  signedOut = false;
+  load();
+  setInterval(() => { if (S && !document.hidden) render(); }, 30000);
+  document.addEventListener("visibilitychange", () => (document.hidden ? clearTimeout(poll) : signedOut || load()));
 }
 
 tg.ready();
 tg.expand();
-if (!initData) {
-  const why = tg.platform === "unknown" ? "Страница открыта не из Telegram" : `Telegram ${tg.platform} ${tg.version} не передал данные входа`;
+const loginToken = web && new URLSearchParams(location.hash.slice(1)).get("login");
+if (loginToken) {
+  signInWithLink(loginToken);
+} else if (!initData && !web) {
   app.replaceChildren(el("div", { class: "empty" },
     el("p", {}, "Открой приложение кнопкой из закреплённого сообщения в чате Telegram."),
-    el("p", { style: "font-size:12px;word-break:break-word" }, `${why}. ${navigator.userAgent}`)));
+    el("p", { style: "font-size:12px;word-break:break-word" }, `Telegram ${tg.platform} ${tg.version} не передал данные входа. ${navigator.userAgent}`)));
 } else {
-  load();
-  setInterval(() => { if (S && !document.hidden) render(); }, 30000);
-  document.addEventListener("visibilitychange", () => (document.hidden ? clearTimeout(poll) : load()));
+  start();
 }
 </script>
 </body>

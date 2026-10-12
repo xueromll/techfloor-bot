@@ -38,6 +38,9 @@ const HITS_MAX = 10000;
 const BLOCK_MAX_DAYS = 365;
 const BROKEN_NOTE_LENGTH = 100;
 const NEVER = 1e12;
+const LOGIN_MINUTES = 10;
+const SESSION_DAYS = 30;
+const SESSION_COOKIE = "session";
 
 const LIMITS = {
   state: { limit: 60, seconds: 60, scaled: true },
@@ -62,6 +65,9 @@ const MACHINES = {
 const IRONING_BOARD = "Гладильная доска";
 const ANONYMOUS = "Аноним";
 const NOT_FROM_TELEGRAM = "Открой приложение через Telegram.";
+const LOGIN_AGAIN = "Сессия на сайте закончилась — получи новую ссылку для входа: отправь боту /login.";
+const LOGIN_EXPIRED = "Ссылка для входа устарела или уже использована — отправь боту /login ещё раз.";
+const WEB_HELP = "Удобнее в браузере? Отправь /login — пришлю ссылку для входа на сайт.\n\n";
 
 const HELP =
   "Привет! Я бот техэтажа общаги.\n\n" +
@@ -70,6 +76,7 @@ const HELP =
   "Как пользоваться: в чате общаги открой тему про стирку и нажми кнопку «Открыть прачечную» " +
   "в закреплённом сообщении.\n\n" +
   "Лень открывать приложение? Отправь /status — пришлю, какие машины свободны, когда освободятся занятые и что с твоими вещами.\n\n" +
+  WEB_HELP +
   "Уведомления: напоминания про стирку приходят сюда, в личку. Теперь я могу тебе писать.\n\n" +
   "Что-то не работает? Отправь /problem и опиши проблему.";
 
@@ -83,6 +90,7 @@ const ROOM_HELP =
   "Как пользоваться: в чате общаги открой тему про стирку или про игровую и нажми кнопку " +
   "в закреплённом сообщении — «Открыть прачечную» или «Открыть игровую».\n\n" +
   "Лень открывать приложение? Отправь /status — пришлю, какие стиралки и сушилки свободны, когда освободятся занятые и что с твоими вещами.\n\n" +
+  WEB_HELP +
   "Уведомления: напоминания про стирку и про брони игровой приходят сюда, в личку — " +
   "вечером накануне я спрошу, нужна ли бронь на завтра, и напомню за полчаса до начала. " +
   "Теперь я могу тебе писать.\n\n" +
@@ -129,6 +137,7 @@ const PLAYROOM_HELP =
   "К закрытой брони можно попроситься — организатор примет или откажет.\n\n" +
   "Как пользоваться: в чате общаги открой тему про игровую и нажми кнопку «Открыть игровую» " +
   "в закреплённом сообщении.\n\n" +
+  WEB_HELP +
   "Уведомления: напоминания про брони игровой приходят сюда, в личку — " +
   "вечером накануне я спрошу, нужна ли бронь на завтра, и напомню за полчаса до начала. " +
   "Теперь я могу тебе писать.\n\n" +
@@ -205,6 +214,9 @@ const SCHEMA = [
     actor_id INTEGER, actor_name TEXT, actor_username TEXT, mtype TEXT, num INTEGER,
     owner_id INTEGER, owner_name TEXT, owner_username TEXT, details TEXT)`,
   `CREATE INDEX IF NOT EXISTS events_chat_at ON events (chat_id, at)`,
+  `CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY, kind TEXT NOT NULL, user_id INTEGER NOT NULL, name TEXT NOT NULL, username TEXT,
+    chat_id INTEGER NOT NULL, expires_at REAL NOT NULL, created_at REAL NOT NULL)`,
 ];
 
 const MIGRATIONS = [
@@ -229,7 +241,7 @@ const MIGRATIONS = [
 ];
 
 const NUMBERS = WALLS.flat();
-const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings", "room_joins", "room_requests", "blocks", "events"];
+const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings", "room_joins", "room_requests", "blocks", "events", "sessions"];
 const UNKNOWN = { id: 0, name: "неизвестно", username: null };
 
 const LEFTOVER = new Set(["done", "parked", "loaded"]);
@@ -239,7 +251,7 @@ const PLAYROOM_ONLY = new Set(["room_book", "room_edit", "room_cancel", "room_jo
 const LAUNDRY_ONLY = new Set(["take", "load", "claim", "free", "queue", "unqueue", "next", "unnext", "book", "unbook", "move", "picked", "broken", "fixed", "retime", "admin_reset_laundry"]);
 const ANNOUNCING = new Set(["room_book", "room_edit", "room_cancel"]);
 const UNPINNED = new Set(["dm", "problem"]);
-const COMMANDS = ["/start", "/problem", "/status", "/board", "/playroom", "/unpin", "/block", "/unblock", "/blocked"];
+const COMMANDS = ["/start", "/problem", "/status", "/login", "/board", "/playroom", "/unpin", "/block", "/unblock", "/blocked"];
 const memberCache = new Map();
 const authCache = new Map();
 const blockCache = new Map();
@@ -373,11 +385,15 @@ export default {
       if (url.pathname === "/setup") return await onSetup(url, env, ip);
       if (url.pathname === "/api/state") return await apiState(request, env);
       if (url.pathname === "/api/action" && request.method === "POST") return await apiAction(request, env);
+      if (url.pathname === "/api/login" && request.method === "POST") return await apiLogin(request, env, url, ip);
+      if (url.pathname === "/api/logout" && request.method === "POST") return await apiLogout(request, env, url);
       return respond("Not found", 404);
     } catch (e) {
       if (e instanceof ApiError) {
         if (e.message === NOT_FROM_TELEGRAM) spend(env, "fail", ip);
-        return json({ error: e.message }, e.status, e.retry ? { "Retry-After": String(e.retry) } : {});
+        const body = { error: e.message };
+        if (e.status === 401) body.bot = await username(env);
+        return json(body, e.status, e.retry ? { "Retry-After": String(e.retry) } : {});
       }
       console.error(e);
       return json({ error: "Ошибка сервера, попробуй ещё раз." }, 500);
@@ -879,6 +895,7 @@ async function tick(env, chatId = null) {
       env.DB.prepare("DELETE FROM room_requests WHERE booking_id NOT IN (SELECT id FROM room_bookings)"),
       env.DB.prepare("DELETE FROM blocks WHERE until IS NOT NULL AND until < ?").bind(t),
       env.DB.prepare("DELETE FROM events WHERE at < ?").bind(t - LOG_DAYS * 86400),
+      env.DB.prepare("DELETE FROM sessions WHERE expires_at < ?").bind(t),
     ]);
   }
   if (!playroom(env)) return;
@@ -1027,24 +1044,59 @@ async function laundryStatus(env, chatId, userId) {
   );
 }
 
-async function statusView(env, userId) {
+async function homeChat(env, userId, tables) {
   const rows = await all(
     env,
-    "SELECT b.chat_id, k.until, k.reason FROM boards b LEFT JOIN people p ON p.chat_id = b.chat_id AND p.user_id = ? " +
+    `SELECT b.chat_id, k.until, k.reason FROM (${tables.map((t) => `SELECT chat_id FROM ${t}`).join(" UNION ")}) b ` +
+      "LEFT JOIN people p ON p.chat_id = b.chat_id AND p.user_id = ? " +
       "LEFT JOIN blocks k ON k.chat_id = b.chat_id AND k.user_id = ? AND (k.until IS NULL OR k.until > ?) ORDER BY p.seen_at DESC",
     userId, userId, now()
   );
   for (const r of rows) {
     if (!allowed(env, r.chat_id) || !(await membership(env, r.chat_id, userId)).inside) continue;
-    if (r.reason) return { text: blockedText(env, r) };
-    return {
-      text: await laundryStatus(env, r.chat_id, userId),
-      reply_markup: {
-        inline_keyboard: [[{ text: "Открыть прачечную", url: await appLink(env, r.chat_id) }]],
-      },
-    };
+    return r.reason ? { blocked: blockedText(env, r) } : { chatId: r.chat_id };
   }
-  return { text: "Не нашёл прачечную ни в одном твоём чате — статус машин видят только участники чата общаги." };
+  return null;
+}
+
+async function statusView(env, userId) {
+  const home = await homeChat(env, userId, ["boards"]);
+  if (!home) return { text: "Не нашёл прачечную ни в одном твоём чате — статус машин видят только участники чата общаги." };
+  if (home.blocked) return { text: home.blocked };
+  return {
+    text: await laundryStatus(env, home.chatId, userId),
+    reply_markup: {
+      inline_keyboard: [[{ text: "Открыть прачечную", url: await appLink(env, home.chatId) }]],
+    },
+  };
+}
+
+function newToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function digest(token) {
+  return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(token))));
+}
+
+async function loginView(env, from, origin) {
+  const tables = [laundry(env) && "boards", playroom(env) && "pboards"].filter(Boolean);
+  if (!tables.length) return { text: "Приложение сейчас выключено." };
+  const home = await homeChat(env, from.id, tables);
+  if (!home) return { text: "Не нашёл прачечную ни в одном твоём чате — войти на сайт могут только участники чата общаги." };
+  if (home.blocked) return { text: home.blocked };
+  const token = newToken();
+  const t = now();
+  await env.DB.prepare(
+    "INSERT INTO sessions (id, kind, user_id, name, username, chat_id, expires_at, created_at) VALUES (?, 'link', ?, ?, ?, ?, ?, ?)"
+  ).bind(await digest(token), from.id, from.first_name || ANONYMOUS, from.username ?? null, home.chatId, t + LOGIN_MINUTES * 60, t).run();
+  return {
+    text:
+      `Ссылка для входа на сайт. Она работает ${LOGIN_MINUTES} минут и только один раз, после входа сайт помнит тебя ${SESSION_DAYS} дней.\n\n` +
+      "Не пересылай её никому — по ней войдут под твоим именем. Чтобы открыть в обычном браузере, зажми кнопку и скопируй ссылку.",
+    reply_markup: { inline_keyboard: [[{ text: "Войти на сайт", url: `${origin}/#login=${token}` }]] },
+  };
 }
 
 async function say(env, chatId, text, extra = {}, table = "boards") {
@@ -1115,14 +1167,14 @@ async function onWebhook(request, env, ip) {
   try {
     const update = await readObject(request, WEBHOOK_BODY_MAX);
     await ensureSchema(env);
-    await onUpdate(update, env);
+    await onUpdate(update, env, env.SITE_URL || new URL(request.url).origin);
   } catch (e) {
     console.error("Update failed", e);
   }
   return respond("ok");
 }
 
-async function onUpdate(update, env) {
+async function onUpdate(update, env, origin) {
   if (update.callback_query) return onCallback(env, update.callback_query);
   if (update.my_chat_member) return onJoin(env, update.my_chat_member);
   const msg = update.message;
@@ -1161,6 +1213,9 @@ async function onUpdate(update, env) {
       return;
     }
     if (command === "/status") return tg(env, "sendMessage", { chat_id: chat.id, parse_mode: "HTML", ...(await statusView(env, msg.from.id)) });
+    if (command === "/login" || (command === "/start" && msg.text.trim().split(/\s+/)[1] === "login")) {
+      return tg(env, "sendMessage", { chat_id: chat.id, ...(await loginView(env, msg.from, origin)) });
+    }
     await tg(env, "sendMessage", { chat_id: chat.id, text: command === "/start" ? helpText(env) : `Отправь ${command} в групповом чате.` });
     return;
   }
@@ -1176,7 +1231,7 @@ async function onUpdate(update, env) {
   if (command === "/playroom") await updateRoomBoard(env, chat.id, true, thread);
   else if (command === "/board" || command === "/start") await updatePinned(env, chat.id, command === "/board", thread);
   else if (command === "/unpin") await unpin(env, msg, thread);
-  else if (command !== "/problem" && command !== "/status") await moderate(env, msg, command, thread, anonymousAdmin ? null : msg.from);
+  else if (command !== "/problem" && command !== "/status" && command !== "/login") await moderate(env, msg, command, thread, anonymousAdmin ? null : msg.from);
 }
 
 async function problem(env, msg, text) {
@@ -1483,6 +1538,7 @@ async function onSetup(url, env, ip) {
       commands: [
         { command: "start", description: "Что умеет бот" },
         ...(laundry(env) ? [{ command: "status", description: "Что сейчас со стиралками и сушилками" }] : []),
+        { command: "login", description: "Войти на сайте" },
         { command: "problem", description: "Сообщить о проблеме" },
       ],
       scope: { type: "all_private_chats" },
@@ -1510,6 +1566,7 @@ async function onSetup(url, env, ip) {
       : `Разрешённые чаты: не заданы — бота можно добавить в любой чат. Задай ALLOWED_CHATS. Чаты с закрепом сейчас: ${left.join(", ") || "нет"}`,
     await cronStatus(env),
     `Адрес Mini App для BotFather: ${url.origin}/`,
+    `Сайт: ${env.SITE_URL || url.origin}/ — вход через /login в личке бота`,
   ];
   return respond(lines.join("\n"));
 }
@@ -1600,17 +1657,84 @@ async function strike(env, chatId, userId) {
   ).bind(chatId, userId, until, t).run();
 }
 
+function cookie(request, name) {
+  for (const part of (request.headers.get("Cookie") || "").split(";")) {
+    const at = part.indexOf("=");
+    if (at > 0 && part.slice(0, at).trim() === name) return part.slice(at + 1).trim();
+  }
+  return "";
+}
+
+function sessionCookie(url, token, seconds) {
+  return `${SESSION_COOKIE}=${token}; Path=/api; Max-Age=${seconds}; HttpOnly; SameSite=Strict${url.protocol === "https:" ? "; Secure" : ""}`;
+}
+
+async function findSession(env, token, kind) {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
+  await ensureSchema(env);
+  const sql = kind === "link"
+    ? "DELETE FROM sessions WHERE id = ? AND kind = 'link' AND expires_at > ? RETURNING *"
+    : "SELECT * FROM sessions WHERE id = ? AND kind = 'web' AND expires_at > ?";
+  return first(env, sql, await digest(token), now());
+}
+
+async function identify(request, env) {
+  const raw = request.headers.get("X-Init-Data") || "";
+  const token = cookie(request, SESSION_COOKIE);
+  if (raw || !token) {
+    const { user, authDate, start: startParam } = await verifyInitData(env, raw);
+    if (!(now() - authDate <= INIT_DATA_TTL)) throw new ApiError("Сессия устарела — закрой и открой приложение заново.", 401);
+    const start = startParam.match(/^(-?\d{1,15})(?:_([a-z]))?$/);
+    if (!start) throw new ApiError("Открой приложение кнопкой из закреплённого сообщения в чате.", 400);
+    return { me: { id: user.id, name: user.first_name, username: user.username ?? null }, chatId: Number(start[1]), tab: start[2] };
+  }
+  const ip = request.headers.get("CF-Connecting-IP") || "";
+  const retry = full(env, "fail", ip);
+  if (retry) throw tooMany(retry);
+  const row = await findSession(env, token, "web");
+  if (!row) {
+    spend(env, "fail", ip);
+    throw new ApiError(LOGIN_AGAIN, 401);
+  }
+  return { me: { id: row.user_id, name: row.name, username: row.username }, chatId: row.chat_id, tab: "" };
+}
+
+async function apiLogin(request, env, url, ip) {
+  const origin = request.headers.get("Origin");
+  if (origin && origin !== url.origin) throw new ApiError("Некорректный запрос.", 403);
+  const retry = full(env, "fail", ip);
+  if (retry) throw tooMany(retry);
+  const body = await readObject(request, API_BODY_MAX);
+  const link = await findSession(env, String(body.token ?? ""), "link");
+  if (!link) {
+    spend(env, "fail", ip);
+    throw new ApiError(LOGIN_EXPIRED, 401);
+  }
+  const token = newToken();
+  const t = now();
+  await env.DB.prepare(
+    "INSERT INTO sessions (id, kind, user_id, name, username, chat_id, expires_at, created_at) VALUES (?, 'web', ?, ?, ?, ?, ?, ?)"
+  ).bind(await digest(token), link.user_id, link.name, link.username, link.chat_id, t + SESSION_DAYS * 86400, t).run();
+  await audit(env, link.chat_id, "login", { id: link.user_id, name: link.name, username: link.username });
+  return json({ ok: true }, 200, { "Set-Cookie": sessionCookie(url, token, SESSION_DAYS * 86400) });
+}
+
+async function apiLogout(request, env, url) {
+  const token = cookie(request, SESSION_COOKIE);
+  if (/^[A-Za-z0-9_-]{43}$/.test(token)) {
+    await ensureSchema(env);
+    await env.DB.prepare("DELETE FROM sessions WHERE id = ? AND kind = 'web'").bind(await digest(token)).run();
+  }
+  return json({ ok: true }, 200, { "Set-Cookie": sessionCookie(url, "", 0) });
+}
+
 async function authorize(request, env, bucket) {
-  const { user, authDate, start: startParam } = await verifyInitData(env, request.headers.get("X-Init-Data") || "");
-  if (!(now() - authDate <= INIT_DATA_TTL)) throw new ApiError("Сессия устарела — закрой и открой приложение заново.", 401);
-  const start = startParam.match(/^(-?\d{1,15})(?:_([a-z]))?$/);
-  if (!start) throw new ApiError("Открой приложение кнопкой из закреплённого сообщения в чате.", 400);
-  const chatId = Number(start[1]);
+  const { me: user, chatId, tab } = await identify(request, env);
   if (!allowed(env, chatId)) throw new ApiError(FOREIGN_CHAT, 403);
   const rooms = playroom(env);
   const washing = laundry(env);
   if (!rooms && !washing) throw new ApiError("Приложение сейчас выключено.", 404);
-  const section = rooms && (start[2] === "p" || !washing) ? "playroom" : "laundry";
+  const section = rooms && (tab === "p" || !washing) ? "playroom" : "laundry";
   const cached = activeBlock(chatId, user.id);
   if (cached) throw new ApiError(blockedText(env, cached), 403);
   const retry = spend(env, bucket, user.id);
@@ -1634,7 +1758,7 @@ async function authorize(request, env, bucket) {
   }
   const { inside, admin } = await membership(env, chatId, user.id);
   if (!inside) throw new ApiError("Приложение доступно только участникам чата.", 403);
-  const me = { id: user.id, name: user.first_name, username: user.username ?? null };
+  const me = { ...user };
   me.hidden = await remember(env, chatId, me, mine[0]);
   return { chatId, me, admin, section };
 }

@@ -23,7 +23,7 @@ class H(BaseHTTPRequestHandler):
             if th == BAD_THREAD:
                 return self.reply({"ok": False, "error_code": 400, "description": "Bad Request: message thread not found"})
             n[0] += 1; res = {"message_id": n[0]}
-            sent.append({"chat_id": body["chat_id"], "text": body["text"]})
+            sent.append({"chat_id": body["chat_id"], "text": body["text"], "markup": body.get("reply_markup")})
             if th: res.update(message_thread_id=th, is_topic_message=True)
             where = "DM " + str(body["chat_id"]) if body["chat_id"] > 0 else f"CHAT[topic {th or 'General'}]"
             print(f"{where}: " + body["text"].replace("\n", " | ")[:90], flush=True)
