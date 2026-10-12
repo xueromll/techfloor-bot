@@ -4,7 +4,182 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <title>Техэтаж</title>
-<script src="/telegram-web-app.js"></script>
+<script>
+(function () {
+  var params = {};
+  try { params = JSON.parse(sessionStorage.getItem("tgParams")) || {}; } catch (e) {}
+  new URLSearchParams(location.hash.slice(1)).forEach(function (v, k) { params[k] = v; });
+  try { sessionStorage.setItem("tgParams", JSON.stringify(params)); } catch (e) {}
+  var iframe = window.parent != null && window.parent !== window;
+  var version = params.tgWebAppVersion || "6.0";
+  var handlers = {};
+  var theme = {};
+  var popup = null;
+  var access = null;
+
+  function post(type, data) {
+    if (data === undefined) data = "";
+    try {
+      if (window.TelegramWebviewProxy !== undefined) window.TelegramWebviewProxy.postEvent(type, JSON.stringify(data));
+      else if (window.external && "notify" in window.external) window.external.notify(JSON.stringify({ eventType: type, eventData: data }));
+      else if (iframe) window.parent.postMessage(JSON.stringify({ eventType: type, eventData: data }), "*");
+      else return false;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  function receive(type, data) {
+    if (handlers[type]) try { handlers[type](data || {}); } catch (e) {}
+  }
+  function atLeast(v) {
+    var a = version.split("."), b = String(v).split(".");
+    for (var i = 0; i < Math.max(a.length, b.length); i++) {
+      var x = parseInt(a[i]) || 0, y = parseInt(b[i]) || 0;
+      if (x !== y) return x > y;
+    }
+    return true;
+  }
+  function setTheme(t) {
+    if (!t) return;
+    if (t.bg_color == "#1c1c1d" && t.bg_color == t.secondary_bg_color) t.secondary_bg_color = "#2c2c2e";
+    for (var k in t) {
+      if (!/^#([0-9a-f]{3}){1,2}$/i.test(t[k])) continue;
+      theme[k] = t[k];
+      document.documentElement.style.setProperty("--tg-theme-" + k.split("_").join("-"), t[k]);
+    }
+    try { sessionStorage.setItem("tgTheme", JSON.stringify(theme)); } catch (e) {}
+  }
+  function background() {
+    if (theme.bg_color) post("web_app_set_background_color", { color: theme.bg_color });
+  }
+  function showPopup(p, onClose, fallback) {
+    p.message = String(p.message).trim();
+    if (!popup && atLeast("6.2") && p.message.length <= 256) {
+      popup = onClose;
+      if (post("web_app_open_popup", p)) return;
+      popup = null;
+    }
+    fallback();
+  }
+
+  handlers.popup_closed = function (d) {
+    var cb = popup;
+    popup = null;
+    if (cb) cb(d.button_id === undefined ? null : d.button_id);
+  };
+  handlers.write_access_requested = function (d) {
+    var cb = access;
+    access = null;
+    if (cb) cb(d.status == "allowed");
+  };
+  handlers.theme_changed = function (d) {
+    if (d.theme_params) { setTheme(d.theme_params); background(); }
+  };
+
+  window.Telegram = {
+    WebView: { initParams: params, isIframe: iframe, postEvent: post, receiveEvent: receive },
+    WebApp: {
+      initData: params.tgWebAppData || "",
+      platform: params.tgWebAppPlatform || "unknown",
+      version: version,
+      isVersionAtLeast: atLeast,
+      ready: function () { post("web_app_ready"); },
+      expand: function () { post("web_app_expand"); },
+      showAlert: function (m, cb) {
+        showPopup({ message: m, buttons: [{ id: "", type: "close" }] },
+          function () { if (cb) cb(); },
+          function () { alert(m); if (cb) cb(); });
+      },
+      showConfirm: function (m, cb) {
+        showPopup({ message: m, buttons: [{ id: "ok", type: "ok" }, { id: "", type: "cancel" }] },
+          function (id) { if (cb) cb(id == "ok"); },
+          function () { var ok = confirm(m); if (cb) cb(ok); });
+      },
+      HapticFeedback: {
+        notificationOccurred: function (t) {
+          if (atLeast("6.1")) post("web_app_trigger_haptic_feedback", { type: "notification", notification_type: t });
+        },
+      },
+      requestWriteAccess: function (cb) {
+        if (access) return;
+        access = cb;
+        if (!post("web_app_request_write_access")) access = null;
+      },
+      openTelegramLink: function (url) {
+        var a = document.createElement("a");
+        a.href = url;
+        if (iframe || atLeast("6.1")) post("web_app_open_tg_link", { path_full: a.pathname + a.search });
+        else location.href = "https://t.me" + a.pathname + a.search;
+      },
+    },
+  };
+  window.TelegramGameProxy = { receiveEvent: receive };
+  window.TelegramGameProxy_receiveEvent = receive;
+  if (iframe) {
+    window.addEventListener("message", function (e) {
+      if (e.source !== window.parent) return;
+      var d;
+      try { d = JSON.parse(e.data); } catch (x) { return; }
+      if (!d || !d.eventType) return;
+      if (d.eventType == "reload_iframe") {
+        post("iframe_will_reload");
+        location.reload();
+      } else receive(d.eventType, d.eventData);
+    });
+    post("iframe_ready", { reload_supported: true });
+  }
+
+  try { setTheme(JSON.parse(params.tgWebAppThemeParams)); } catch (e) {}
+  try { setTheme(JSON.parse(sessionStorage.getItem("tgTheme"))); } catch (e) {}
+  post("web_app_set_header_color", { color_key: "bg_color" });
+  background();
+  post("web_app_request_theme");
+})();
+(function () {
+  var started = Date.now();
+  var shown = false;
+  function stuck(reason) {
+    if (shown) return;
+    var boot = document.getElementById("boot");
+    if (!boot) {
+      if (document.getElementById("app")) return;
+      boot = document.createElement("div");
+      boot.style.cssText = "padding:40px 16px;text-align:center;font-family:sans-serif";
+      (document.body || document.documentElement).appendChild(boot);
+    }
+    shown = true;
+    var w = window.Telegram.WebApp;
+    w.ready();
+    w.expand();
+    var device = "Telegram " + w.platform + " " + w.version + "; " +
+      (document.getElementById("app") ? "" : "страница загрузилась не до конца; ") + navigator.userAgent;
+    boot.removeAttribute("id");
+    boot.innerHTML = "";
+    var lines = [
+      "Приложение не запустилось на этом устройстве.",
+      "Сделай скриншот этого экрана и отправь его боту через /problem — так получится найти причину.",
+      reason,
+      device,
+    ];
+    for (var i = 0; i < lines.length; i++) {
+      var p = document.createElement("p");
+      p.textContent = lines[i];
+      if (i > 1) p.style.cssText = "font-size:12px;word-break:break-word;text-align:left";
+      boot.appendChild(p);
+    }
+  }
+  window.addEventListener("error", function (e) {
+    stuck("Ошибка: " + (e.message || e.error || "неизвестно") + (e.lineno ? " (строка " + e.lineno + ")" : ""));
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    stuck("Ошибка: " + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
+  setTimeout(function () {
+    stuck("Не загрузилось за " + Math.round((Date.now() - started) / 1000) + " сек.");
+  }, 30000);
+})();
+</script>
 <style>
   :root {
     --bg: var(--tg-theme-secondary-bg-color, #f1f1f4);
@@ -146,42 +321,8 @@
 <div id="app"><div class="empty" id="boot">Загрузка…</div></div>
 <div id="sheet" hidden></div>
 <script>
-(function () {
-  var started = Date.now();
-  function stuck(reason) {
-    var boot = document.getElementById("boot");
-    if (!boot) return;
-    var w = window.Telegram && window.Telegram.WebApp;
-    var device = (w ? "Telegram " + w.platform + " " + w.version + "; " : "") + navigator.userAgent;
-    boot.removeAttribute("id");
-    boot.innerHTML = "";
-    var lines = [
-      "Приложение не запустилось на этом устройстве.",
-      "Сделай скриншот этого экрана и отправь его боту через /problem — так получится найти причину.",
-      reason,
-      device,
-    ];
-    for (var i = 0; i < lines.length; i++) {
-      var p = document.createElement("p");
-      p.textContent = lines[i];
-      if (i > 1) p.style.cssText = "font-size:12px;word-break:break-word;text-align:left";
-      boot.appendChild(p);
-    }
-  }
-  window.addEventListener("error", function (e) {
-    stuck("Ошибка: " + (e.message || e.error || "неизвестно") + (e.lineno ? " (строка " + e.lineno + ")" : ""));
-  });
-  window.addEventListener("unhandledrejection", function (e) {
-    stuck("Ошибка: " + (e.reason && e.reason.message ? e.reason.message : e.reason));
-  });
-  setTimeout(function () {
-    stuck("Не загрузилось за " + Math.round((Date.now() - started) / 1000) + " сек.");
-  }, 30000);
-})();
-</script>
-<script>
-const tg = window.Telegram && window.Telegram.WebApp;
-const initData = (tg && tg.initData) || new URLSearchParams(location.hash.slice(1)).get("tgWebAppData") || "";
+const tg = window.Telegram.WebApp;
+const initData = tg.initData;
 const app = document.getElementById("app");
 const sheet = document.getElementById("sheet");
 let S = null;
@@ -1221,12 +1362,10 @@ function render() {
   ].filter(Boolean));
 }
 
-if (tg) {
-  tg.ready();
-  tg.expand();
-}
+tg.ready();
+tg.expand();
 if (!initData) {
-  const why = tg ? `Telegram ${tg.platform} ${tg.version} не передал данные входа` : "Скрипт Telegram не загрузился, данных входа в адресе нет";
+  const why = tg.platform === "unknown" ? "Страница открыта не из Telegram" : `Telegram ${tg.platform} ${tg.version} не передал данные входа`;
   app.replaceChildren(el("div", { class: "empty" },
     el("p", {}, "Открой приложение кнопкой из закреплённого сообщения в чате Telegram."),
     el("p", { style: "font-size:12px;word-break:break-word" }, `${why}. ${navigator.userAgent}`)));
