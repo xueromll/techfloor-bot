@@ -648,9 +648,9 @@ function openMachine(m) {
     body.push(el("p", { class: "hint" }, `Забронирована на ${when(m.booking.at)}. Занять можно, только если программа закончится раньше.`));
   }
   if (m.status === "free" || (["hold", "done", "loaded"].includes(m.status) && (mine || marked))) {
-    const pickOwner = m.status === "free" || m.status === "loaded";
+    const pickOwner = m.status === "free" || !mine;
     const busy = pickOwner && S.machines.some((x) => !(x.t === m.t && x.n === m.n) && x.status === "run" && isMe(x.owner));
-    let owner = !pickOwner ? "me" : m.status === "loaded" && m.owner.id === 0 ? "unknown" : busy ? null : "me";
+    let owner = !pickOwner ? "me" : m.status !== "free" && m.owner.id === 0 ? "unknown" : busy ? null : "me";
     const action = m.status === "free" ? "Занять" : "Запустить программу";
     const start = btn(action, () => go());
     const choices = [["me", "Мои вещи"], ["unknown", "Не мои, просто отмечаю"]].map(([v, text]) =>
