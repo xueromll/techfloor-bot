@@ -1,4 +1,5 @@
 import PAGE from "../webapp/index.html";
+import START from "./start.html";
 
 const WARN_MINUTES = 15;
 const MAX_MINUTES = 300;
@@ -379,9 +380,10 @@ function tooMany(retry) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    const ip = request.headers.get("CF-Connecting-IP") || "";
+    const ip = clientIp(request, env);
     try {
       if (url.pathname === "/") return page(request);
+      if (url.pathname === "/start") return start(env, url);
       if (url.pathname === "/telegram" && request.method === "POST") return await onWebhook(request, env, ip);
       if (url.pathname === "/setup") return await onSetup(url, env, ip);
       if (url.pathname === "/api/state") return await apiState(request, env);
@@ -410,6 +412,11 @@ function page(request) {
   const headers = { ...SAFE_HEADERS, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache", ETag: PAGE_ETAG };
   if (request.headers.get("If-None-Match") === PAGE_ETAG) return new Response(null, { status: 304, headers });
   return new Response(PAGE, { headers });
+}
+
+function start(env, url) {
+  const body = START.replace("__SITE__", () => JSON.stringify(siteOrigin(env, url)));
+  return new Response(body, { headers: { ...SAFE_HEADERS, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" } });
 }
 
 async function cronRun(env) {
@@ -1573,7 +1580,7 @@ async function onSetup(url, env, ip) {
       ? `Разрешённые чаты: ${allowedChats(env).join(", ")}` + (left.length ? `. Вышел из чужих чатов: ${left.join(", ")}` : "")
       : `Разрешённые чаты: не заданы — бота можно добавить в любой чат. Задай ALLOWED_CHATS. Чаты с закрепом сейчас: ${left.join(", ") || "нет"}`,
     await cronStatus(env),
-    `Адрес Mini App для BotFather: ${url.origin}/`,
+    `Адрес Mini App для BotFather: ${url.origin}/start`,
     `Сайт: ${env.SITE_URL || url.origin}/ — вход через /login в личке бота`,
   ];
   return respond(lines.join("\n"));
@@ -1665,6 +1672,17 @@ async function strike(env, chatId, userId) {
   ).bind(chatId, userId, until, t).run();
 }
 
+function clientIp(request, env) {
+  const relayed = env.RELAY_KEY && same(request.headers.get("X-Relay-Key"), env.RELAY_KEY)
+    ? (request.headers.get("X-Real-Remote-Address") || "").split(",").pop().trim()
+    : "";
+  return relayed || request.headers.get("CF-Connecting-IP") || "";
+}
+
+function siteOrigin(env, url) {
+  return env.SITE_URL ? new URL(env.SITE_URL).origin : url.origin;
+}
+
 function cookie(request, name) {
   for (const part of (request.headers.get("Cookie") || "").split(";")) {
     const at = part.indexOf("=");
@@ -1696,7 +1714,7 @@ async function identify(request, env) {
     if (!start) throw new ApiError("Открой приложение кнопкой из закреплённого сообщения в чате.", 400);
     return { me: { id: user.id, name: user.first_name, username: user.username ?? null }, chatId: Number(start[1]), tab: start[2] };
   }
-  const ip = request.headers.get("CF-Connecting-IP") || "";
+  const ip = clientIp(request, env);
   const retry = full(env, "fail", ip);
   if (retry) throw tooMany(retry);
   const row = await findSession(env, token, "web");
@@ -1709,7 +1727,7 @@ async function identify(request, env) {
 
 async function apiLogin(request, env, url, ip) {
   const origin = request.headers.get("Origin");
-  if (origin && origin !== url.origin) throw new ApiError("Некорректный запрос.", 403);
+  if (origin && origin !== url.origin && origin !== siteOrigin(env, url)) throw new ApiError("Некорректный запрос.", 403);
   const retry = full(env, "fail", ip);
   if (retry) throw tooMany(retry);
   const body = await readObject(request, API_BODY_MAX);

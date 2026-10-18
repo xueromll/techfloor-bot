@@ -341,6 +341,7 @@
 const tg = window.Telegram.WebApp;
 const initData = tg.initData;
 const web = !initData && tg.platform === "unknown";
+const apiBase = window.apiBase || "";
 const app = document.getElementById("app");
 const sheet = document.getElementById("sheet");
 let S = null;
@@ -430,7 +431,7 @@ async function api(path, body) {
   let res;
   let data = {};
   try {
-    res = await fetch(path, {
+    res = await fetch(apiBase + path, {
       method: body ? "POST" : "GET",
       headers: { "Content-Type": "application/json", "X-Init-Data": initData },
       body: body ? JSON.stringify(body) : undefined,

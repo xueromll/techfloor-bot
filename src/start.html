@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Техэтаж</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f1f1f4; --text: #111111; --hint: #8a8a8e; --accent: #2481cc; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1c1c1e; --text: #f2f2f7; --hint: #98989f; --accent: #3e88f7; } }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #boot { padding: 40px 16px; text-align: center; color: var(--hint); }
+  button { margin-top: 16px; padding: 12px 20px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; font: inherit; }
+</style>
+</head>
+<body>
+<div id="boot">Загрузка…</div>
+<script>
+(function () {
+  var mirrors = [location.origin, __SITE__].filter(function (m, i, all) { return m && all.indexOf(m) === i; });
+  var params = new URLSearchParams(location.hash.slice(1));
+  try {
+    var theme = JSON.parse(params.get("tgWebAppThemeParams"));
+    if (/^#[0-9a-f]{3,6}$/i.test(theme.secondary_bg_color)) document.documentElement.style.setProperty("--bg", theme.secondary_bg_color);
+    if (/^#[0-9a-f]{3,6}$/i.test(theme.hint_color)) document.documentElement.style.setProperty("--hint", theme.hint_color);
+  } catch (e) {}
+  var done = false;
+  var left = mirrors.length;
+  var ctrls = [];
+  var timer = setTimeout(fail, 25000);
+
+  function ready() {
+    try {
+      if (window.TelegramWebviewProxy) window.TelegramWebviewProxy.postEvent("web_app_ready", "");
+      else if (window.external && "notify" in window.external) window.external.notify(JSON.stringify({ eventType: "web_app_ready", eventData: "" }));
+      else if (window.parent !== window) window.parent.postMessage(JSON.stringify({ eventType: "web_app_ready", eventData: "" }), "*");
+    } catch (e) {}
+  }
+
+  function fail() {
+    if (done) return;
+    done = true;
+    ctrls.forEach(function (c) { c.abort(); });
+    var boot = document.getElementById("boot");
+    boot.textContent = "Не получилось загрузить приложение. Проверь интернет. Если включён VPN — смени страну или выключи его.";
+    var again = document.createElement("button");
+    again.textContent = "Попробовать ещё раз";
+    again.onclick = function () { location.reload(); };
+    boot.appendChild(document.createElement("br"));
+    boot.appendChild(again);
+    ready();
+  }
+
+  mirrors.forEach(function (base) {
+    var ctrl = new AbortController();
+    ctrls.push(ctrl);
+    fetch(base + "/", { signal: ctrl.signal, cache: "no-cache" })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
+      .then(function (html) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        ctrls.forEach(function (c) { if (c !== ctrl) c.abort(); });
+        window.apiBase = base === location.origin ? "" : base;
+        document.open();
+        document.write(html);
+        document.close();
+      })
+      .catch(function () { if (--left === 0) fail(); });
+  });
+})();
+</script>
+</body>
+</html>

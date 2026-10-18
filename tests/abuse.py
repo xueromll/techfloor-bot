@@ -72,6 +72,18 @@ H2 = {"CF-Connecting-IP": f"198.19.{n >> 8}.{n & 255}"}
 codes = flood(FAIL_LIMIT + 5, lambda: http("/api/state", None, {**H2, "X-Init-Data": stale})[0]); assert set(codes) == {401}, set(codes)
 st, txt = http("/setup?key=" + SECRET, None, H2); assert st == 200, ("устаревшие сессии закрыли IP", st, txt)
 
+print("--- через шлюз считается IP из X-Real-Remote-Address, а не шлюза; без ключа шлюза заголовок не верят")
+GATE = {"CF-Connecting-IP": f"198.20.{n >> 8}.{n & 255}"}
+VISITOR = f"198.21.{n >> 8}.{n & 255}"
+relay = {**GATE, "X-Relay-Key": RELAY_KEY, "X-Real-Remote-Address": f"{GATE['CF-Connecting-IP']}, {VISITOR}"}
+codes = flood(FAIL_LIMIT, lambda: http("/api/state", None, {**relay, "X-Init-Data": "hash=" + "0" * 64})[0]); assert set(codes) == {401}, set(codes)
+st, txt = http("/setup?key=" + SECRET, None, {"CF-Connecting-IP": VISITOR}); assert st == 429, (st, txt)
+st, txt = http("/setup?key=" + SECRET, None, GATE); assert st == 200, ("один человек закрыл шлюз для всех", st, txt)
+FAKE = {"CF-Connecting-IP": f"198.23.{n >> 8}.{n & 255}", "X-Relay-Key": "wrong", "X-Real-Remote-Address": f"198.24.{n >> 8}.{n & 255}"}
+codes = flood(FAIL_LIMIT, lambda: http("/api/state", None, {**FAKE, "X-Init-Data": "hash=" + "0" * 64})[0]); assert set(codes) == {401}, set(codes)
+st, txt = http("/setup?key=" + SECRET, None, {"CF-Connecting-IP": FAKE["CF-Connecting-IP"]}); assert st == 429, (st, txt)
+st, txt = http("/setup?key=" + SECRET, None, {"CF-Connecting-IP": FAKE["X-Real-Remote-Address"]}); assert st == 200, (st, txt)
+
 print("--- игровая: у участника не больше 3 активных броней, у админа без лимита")
 uid, PZ = fresh("Зоя", start=f"{CH}_p")
 st, d = api(PZ); days = d["room"]["days"]; tom = days[1]["start"]

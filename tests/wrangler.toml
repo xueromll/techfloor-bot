@@ -17,6 +17,7 @@ LAUNDRY = "on"
 ALLOWED_CHATS = "-1001234, -1009999"
 RATE_LIMIT_SCALE = "10"
 OWNER_ID = "1"
+SITE_URL = "https://relay.example"
 TELEGRAM_API = "http://127.0.0.1:8799"
 
 [[d1_databases]]

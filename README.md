@@ -22,6 +22,47 @@ Telegram-бот с мини-приложением для прачечной т�
 
 Чтобы флуд по `/api/*` не съедал суточный лимит, нужен свой домен (бесплатный можно получить на nic.eu.org) и бесплатное правило Rate limiting. Подключите воркер к домену (в `wrangler.toml` добавьте `routes = [{ pattern = "bot.example.org", custom_domain = true }]` и задеплойте), затем в дашборде Cloudflare: Security → WAF → Rate limiting rules → создайте правило с выражением `URI Path contains /api/`, порогом вроде 20 запросов за 10 секунд с одного IP и действием Block. Бесплатный план даёт одно такое правило (поля — только Path и Verified Bot, окно 10 секунд, счёт по IP). Автоматическая защита Cloudflare от DDoS на сетевом уровне работает на любом плане. Правила Rate limiting на адресе `*.workers.dev` не работают — только на своём домене; отключите `workers.dev` после перехода, иначе флуд пойдёт по нему.
 
+Работа без VPN. Российские провайдеры режут соединения с Cloudflare после первых ~16 КБ, а прокси для Telegram окно мини-приложения не использует, поэтому без VPN страница с `*.workers.dev` не загружается. Перед воркером стоит Yandex Cloud API Gateway (бесплатно до 100 000 запросов в месяц): он отдаёт `/` и пересылает `/api/*` на воркер, а вебхук Telegram, cron и база остаются в Cloudflare. Но с некоторых VPN (например, эстонских) не открывается уже Яндекс, поэтому мини-приложение открывается через загрузчик `/start` на воркере (`src/start.html`, ~3 КБ — меньше порога, после которого Cloudflare режут): он одновременно качает страницу приложения с воркера и со шлюза, показывает ту, что пришла первой целиком, и все запросы `/api/*` приложение шлёт туда же. Без VPN выигрывает шлюз, с VPN — любой, с эстонским — воркер. Адрес Mini App для BotFather (`/myapps` → приложение → Edit Web App URL) — `https://…workers.dev/start`, его показывает `/setup`. Адрес шлюза записан в `SITE_URL` в `[vars]`: на него ведут ссылки `/login` (сайт ходит только на свой адрес, потому что вход держится на cookie), и его загрузчик пробует вторым. Запросы со страницы воркера на шлюз идут с другого адреса, поэтому в спецификации шлюза включён CORS для адреса воркера. Все пользователи для воркера приходят с IP шлюза, поэтому шлюз добавляет заголовок `X-Relay-Key` с секретом `RELAY_KEY` (задаётся `npx wrangler secret put RELAY_KEY`), и только с верным ключом воркер берёт IP посетителя из последнего адреса в `X-Real-Remote-Address` — его дописывает сам шлюз, подделать нельзя. Без этого 30 неверных запросов одного человека закрыли бы вход всем. Вход на сайт принимает Origin и воркера, и `SITE_URL`. Старый адрес `workers.dev` продолжает работать с VPN. Спецификация шлюза (`RELAY_KEY` подставить свой):
+
+```yaml
+openapi: 3.0.0
+info:
+  title: techfloor
+  version: 1.0.0
+x-yc-apigateway:
+  cors:
+    origin: https://techfloor.lanhua1122333.workers.dev
+    methods: [GET, POST]
+    allowedHeaders: [Content-Type, X-Init-Data]
+    maxAge: 600
+paths:
+  /:
+    get:
+      x-yc-apigateway-integration:
+        type: http
+        url: https://techfloor.lanhua1122333.workers.dev/
+  /api/{path+}:
+    x-yc-apigateway-any-method:
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+      x-yc-apigateway-integration:
+        type: http
+        url: https://techfloor.lanhua1122333.workers.dev/api/{path}
+        headers:
+          '*': '*'
+          Host: techfloor.lanhua1122333.workers.dev
+          X-Relay-Key: RELAY_KEY
+        timeouts:
+          connect: 5
+          read: 25
+```
+
+`Host` нужно задать явно: с `'*': '*'` шлюз иначе передаёт свой адрес, и Cloudflare обрывает TLS-соединение.
+
 ## Игровая (в архиве)
 
 Календарь броней игровой сейчас выключен: код остаётся в `src/worker.js` и `webapp/index.html`, но в продакшене его не видно. Включается переменной `PLAYROOM = "on"` в `[vars]` в `wrangler.toml` (сейчас `"off"`; без переменной игровая тоже выключена), затем `npm run deploy` и `/setup?key=WEBHOOK_SECRET`, чтобы вернуть описание бота и команду `/playroom` в меню. В тестах (`tests/wrangler.toml`) игровая включена, чтобы архивный код оставался рабочим.

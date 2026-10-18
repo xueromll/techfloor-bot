@@ -20,6 +20,7 @@ PLAYROOM = "off"
 LAUNDRY = "on"
 ALLOWED_CHATS = "-1003698238682"
 OWNER_ID = "970027103"
+SITE_URL = "https://d5dsdv0clrk216vunb07.d8epmcec.apigw.yandexcloud.net"
 
 [[d1_databases]]
 binding = "DB"

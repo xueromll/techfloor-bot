@@ -29,7 +29,7 @@ uid = FRESH_UID + random.randrange(10 ** 9)
 
 print("--- /login присылает одноразовую ссылку на сайт, по ней ставится сессия")
 text, token, url = link(uid, username="webuser")
-assert token and "один раз" in text and url.startswith(B + "/#login="), (text, url)
+assert token and "один раз" in text and url.startswith(SITE + "/#login="), (text, url)
 st, d, c = web("/api/login", {"token": token}); assert st == 200 and c, (st, d, c)
 assert "HttpOnly" in c and "SameSite=Strict" in c and "Path=/api" in c, c
 session = c.split(";")[0]
@@ -51,6 +51,10 @@ print("--- вход со страницы чужого сайта отклоня
 _, token3, _ = link(uid)
 st, d, _ = enter(token3, origin="https://evil.example"); assert st == 403, (st, d)
 st, d, second = enter(token3, origin=B); assert st == 200 and second, (st, d)
+
+print("--- вход со страницы шлюза из SITE_URL проходит")
+_, token4, _ = link(uid)
+st, d, third = enter(token4, origin=SITE); assert st == 200 and third, (st, d)
 
 print("--- без куки, с мусорной и с чужой кукой не пускают")
 st, d, _ = web("/api/state"); assert st == 401 and "через Telegram" in err(d), (st, d)
@@ -84,6 +88,10 @@ st, d, _ = web("/api/state", cookie=second); assert st == 401 and "/login" in er
 
 print("--- страница сайта отдаётся статикой")
 with urllib.request.urlopen(B + "/") as r: assert "/api/login" in r.read().decode()
+
+print("--- /start: маленький загрузчик, качает приложение и с воркера, и с адреса из SITE_URL")
+with urllib.request.urlopen(B + "/start") as r: body = r.read().decode()
+assert len(body.encode()) < 8000 and f'"{SITE}"' in body and "__SITE__" not in body and "document.write" in body, body[:300]
 
 wipe()
 print("WEB TESTS OK")
