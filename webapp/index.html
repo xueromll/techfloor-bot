@@ -328,6 +328,7 @@
   .wheel-col { position: relative; }
   .wheel-list { height: calc(var(--row) * var(--rows)); overflow-y: auto; scroll-snap-type: y mandatory; overscroll-behavior: contain; scrollbar-width: none; outline: none; -webkit-mask-image: linear-gradient(transparent, #000 40%, #000 60%, transparent); mask-image: linear-gradient(transparent, #000 40%, #000 60%, transparent); }
   .wheel-list::-webkit-scrollbar { display: none; }
+  .wheel-list.slow { touch-action: none; }
   .wheel-pad { height: calc(var(--row) * (var(--rows) - 1) / 2); }
   .wheel-item { height: var(--row); line-height: var(--row); padding-right: calc(50% + 2px); text-align: right; font-size: 20px; font-variant-numeric: tabular-nums; color: var(--hint); scroll-snap-align: center; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent; }
   .wheel-item.on { color: var(--text); font-weight: 600; }
@@ -416,7 +417,7 @@ function durationShort(m) {
 
 const WHEEL_ROW = 34;
 
-function wheel(count, text, unit, onPick, onEnter) {
+function wheel(count, text, unit, onPick, onEnter, slow = 1) {
   const items = Array.from({ length: count }, (_, i) => el("div", { class: "wheel-item", onclick: () => go(i) }, text(i)));
   const list = el("div", { class: "wheel-list", tabindex: "0" }, el("div", { class: "wheel-pad" }), items, el("div", { class: "wheel-pad" }));
   let cur = -1;
@@ -450,8 +451,71 @@ function wheel(count, text, unit, onPick, onEnter) {
     else if (e.key === "ArrowUp") { e.preventDefault(); go(cur - 1); }
     else if (e.key === "Enter") onEnter();
   });
+  if (slow > 1) slowScroll(list, slow, () => go(Math.round(list.scrollTop / WHEEL_ROW)));
   const col = el("div", { class: "wheel-col" }, list, el("span", { class: "wheel-unit" }, unit));
   return { col, get: () => cur, set: go };
+}
+
+function slowScroll(list, slow, snap) {
+  list.classList.add("slow");
+  let drag = null;
+  let glide = 0;
+  let idle = 0;
+  const free = () => {
+    cancelAnimationFrame(glide);
+    clearTimeout(idle);
+    list.style.scrollSnapType = "none";
+  };
+  const finish = () => {
+    list.style.scrollSnapType = "";
+    snap();
+  };
+  list.addEventListener("pointerdown", (e) => {
+    free();
+    drag = { id: e.pointerId, y: e.clientY, top: list.scrollTop, last: list.scrollTop, t: e.timeStamp, v: 0, moved: false };
+  });
+  list.addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    if (!drag.moved && Math.abs(e.clientY - drag.y) < 4) return;
+    if (!drag.moved) {
+      drag.moved = true;
+      try { list.setPointerCapture(e.pointerId); } catch {}
+    }
+    list.scrollTop = drag.top - (e.clientY - drag.y) / slow;
+    const dt = Math.max(1, e.timeStamp - drag.t);
+    drag.v = 0.8 * ((list.scrollTop - drag.last) / dt) + 0.2 * drag.v;
+    drag.last = list.scrollTop;
+    drag.t = e.timeStamp;
+  });
+  const release = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const { moved, t } = drag;
+    let v = e.timeStamp - t > 80 ? 0 : drag.v;
+    drag = null;
+    if (!moved) {
+      list.style.scrollSnapType = "";
+      return;
+    }
+    let last = performance.now();
+    const step = (now) => {
+      const dt = now - last;
+      last = now;
+      const before = list.scrollTop;
+      list.scrollTop += v * dt;
+      v *= Math.pow(0.994, dt);
+      if (Math.abs(v) > 0.03 && list.scrollTop !== before) glide = requestAnimationFrame(step);
+      else finish();
+    };
+    glide = requestAnimationFrame(step);
+  };
+  list.addEventListener("pointerup", release);
+  list.addEventListener("pointercancel", release);
+  list.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    free();
+    list.scrollTop += e.deltaY / slow;
+    idle = setTimeout(finish, 120);
+  }, { passive: false });
 }
 
 function timeFields(onChange, onEnter, minutes = 0) {
@@ -463,7 +527,7 @@ function timeFields(onChange, onEnter, minutes = 0) {
     else onChange();
   };
   const hours = wheel(Math.floor(max / 60) + 1, String, "ч", pick, onEnter);
-  const mins = wheel(60, (i) => String(i).padStart(2, "0"), "мин", pick, onEnter);
+  const mins = wheel(60, (i) => String(i).padStart(2, "0"), "мин", pick, onEnter, 1.2);
   const total = () => Math.min(max, hours.get() * 60 + mins.get());
   const set = (v, smooth = true) => {
     v = Math.max(0, Math.min(max, v));
