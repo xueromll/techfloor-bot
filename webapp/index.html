@@ -698,6 +698,7 @@ function openMachine(m) {
   }
   if (m.status === "run") body.push(btn("Время на дисплее другое", () => openRetime(m), "secondary"));
   if (m.status === "run" && ((m.reporter ? marked : mine) || admin)) body.push(btn("Освободить", () => act({ action: "free", t: m.t, n: m.n }), "danger"));
+  if (m.movable && !mine) body.push(el("p", { class: "hint" }, "Хозяин разрешил переложить вещи — в свободную машину или на гладильную доску."));
   if (leftover) body.push(btn("Вещи забраны", () => act({ action: "free", t: m.t, n: m.n })));
   if (leftover && !mine) body.push(btn("Вещи переложены — указать куда", () => openMove(m), "secondary"));
   if (m.status === "hold" && mine) body.push(btn("Отказаться", () => act({ action: "free", t: m.t, n: m.n }), "danger"));
@@ -825,12 +826,19 @@ function typeCard() {
   const cfg = S.types[t];
   const queue = S.queue[t] || [];
   const pos = queue.findIndex(isMe) + 1;
-  const free = S.machines.filter((m) => m.t === t && m.status === "free").length;
+  const free = S.machines.filter((m) => m.t === t && m.status === "free").map((m) => m.n);
+  const soonest = S.machines.filter((m) => m.t === t && m.status === "run").sort((a, b) => a.ends - b.ends)[0];
   const booking = S.bookings.find((b) => b.t === t && isMe(b.user));
+  const calm = free.length && !queue.length && !pos;
   const parts = [];
   if (pos) parts.push(el("p", {}, `Ты в очереди на ${cfg.acc}: место ${pos}.`), btn("Выйти из очереди", () => act({ action: "unqueue", t }), "secondary"));
-  else if (!free || queue.length) parts.push(btn(`Встать в очередь на ${cfg.acc}`, () => act({ action: "queue", t })));
+  else if (calm) parts.push(el("p", {}, `Свободно: ${free.join(", ")} — просто подойди и займи.`));
+  else {
+    if (!free.length) parts.push(el("p", {}, `Все ${cfg.title.toLowerCase()} заняты.` + (soonest ? ` Ближайшая освободится в ${clock(soonest.ends)}.` : "")));
+    parts.push(btn(`Встать в очередь на ${cfg.acc}`, () => act({ action: "queue", t })));
+  }
   if (booking) parts.push(el("p", { class: "label" }, `Твоя бронь: ${cfg.acc}${booking.n ? " " + booking.n : ""} в ${when(booking.at)}.`), btn("Отменить бронь", () => act({ action: "unbook", id: booking.id }), "secondary"));
+  else if (calm) parts.push(el("button", { class: "x", style: "padding:4px 0", onclick: () => openSlots(t) }, "Нужна позже? Забронировать на время"));
   else parts.push(btn("Забронировать на время", () => openSlots(t), "secondary"));
   if (queue.length) parts.push(el("p", { class: "hint", style: "margin-top:10px" }, "Очередь: " + queue.map(who).join(", ")));
   const books = S.bookings.filter((b) => b.t === t);
@@ -906,8 +914,13 @@ function openGuide() {
       el("div", { class: "btn secondary" }, "Время на дисплее другое"),
       el("p", { class: "hint", style: "margin:8px 0 0" }, "Время исправляли по дисплею, последний раз — @vova. Изначально было до 15:10."),
     ]),
-    guideStep(4, "Бот напишет тебе, когда стирка закончится", dmHint(),
-      guideBubble(`${name} 3 закончила — забери бельё и отметь в приложении «Вещи забраны».`)),
+    guideStep(4, "Бот напишет тебе, когда стирка закончится", [
+      `Под сообщением — кнопки «Вещи забраны», «Через ${S.snooze} мин» и «Можно переложить». Если вещи так и лежат, бот напомнит через ${S.nagHours.join(", ")} ч после конца программы.`,
+      dmHint(),
+    ].filter(Boolean), [
+      guideBubble(`${name} 3 закончила — забери бельё.`),
+      el("div", { class: "btn", style: "margin-top:6px" }, "Вещи забраны"),
+      el("div", { class: "chips two", style: "margin-top:6px" }, el("div", { class: "chip" }, `Через ${S.snooze} мин`), el("div", { class: "chip" }, "Можно переложить"))]),
     guideStep(5, "Забрал вещи — нажми «Вещи забраны»", "Так другие сразу увидят, что машина свободна. Машина «готово», а внутри пусто? Нажать может любой — хозяину придёт уведомление.",
       [el("div", { class: "wall" }, demoTile("done", 3, "готово", true)), el("div", { class: "btn" }, "Вещи забраны")]),
     guideStep(6, "Видишь занятую машину, которой нет в приложении?", "Нажми на её номер и выбери «Не мои, просто отмечаю» или «Тут чужие вещи, без программы». Это тоже помогает всем.",
@@ -1056,6 +1069,81 @@ function privacyCard() {
       S.me.hidden
         ? "Включено: везде вместо твоего имени — «Аноним» (у тебя видно «Аноним (это ты)»). Админы чата видят имя."
         : "Другие увидят «Аноним» вместо твоего имени."));
+}
+
+function digestCard() {
+  const box = el("input", { type: "checkbox", onchange: () => act({ action: "digest", on: box.checked }) });
+  box.checked = !!S.me.digest;
+  return el("section", { class: "card" },
+    el("label", { class: "toggle" }, box, el("span", { style: "color:var(--text);font-size:15px" }, `Вечерняя сводка в ${S.digestHour}`)),
+    el("p", { class: "hint", style: "margin:8px 0 0" },
+      "Что свободно и когда стирать без очереди. Раз в день, в личку." + (S.dm === 1 ? "" : " Чтобы она приходила, разреши боту писать тебе.")));
+}
+
+function badgesSeen() {
+  try { return Number(localStorage.getItem("badges-seen")) || 0; }
+  catch (e) { return 0; }
+}
+
+function seeBadges() {
+  try { localStorage.setItem("badges-seen", String(S.badgeWeek || 0)); }
+  catch (e) {}
+}
+
+function honorCard() {
+  const fresh = S.badgeWeek && S.badgeWeek > badgesSeen();
+  return el("section", { class: "card" },
+    el("div", { class: "row" },
+      el("div", {},
+        el("h2", { style: "margin:0" }, "Доска почёта", fresh ? el("span", { class: "badge open" }, "новый значок") : null),
+        el("p", { class: "hint", style: "margin:4px 0 0" }, "Значки за привычки, которые берегут общее время.")),
+      el("button", { class: "btn small secondary", onclick: openHonor }, "Открыть")));
+}
+
+function badgeProgress(b) {
+  if (b.id === "clean") {
+    if (b.late) return "В этот раз не вышло — новая неделя с понедельника.";
+    return b.value >= b.need ? "Пока всё вовремя" : `${b.value} из ${b.need} на этой неделе`;
+  }
+  return `${Math.min(b.value, b.need)} из ${b.need} на этой неделе` + (b.value >= b.need ? " — готово" : "");
+}
+
+function honorBody(h) {
+  const earnedAny = h.mine.some((b) => b.earned);
+  return [
+    el("h2", {}, "Мои значки"),
+    earnedAny ? null : el("p", { class: "hint" }, "Значков пока нет. Они появятся здесь — бот о них не пишет."),
+    h.mine.map((b) => el("div", { class: "item" },
+      el("b", {}, b.name),
+      el("div", { class: "hint" }, b.text),
+      el("div", { class: "hint" }, badgeProgress(b)),
+      b.earned ? el("div", { class: "hint" }, `Получено: неделя ${b.earned.week}` + (b.earned.times > 1 ? ` · всего недель: ${b.earned.times}` : "")) : null)),
+    el("h2", { style: "margin:20px 0 4px" }, `Доска почёта · ${h.board.week}`),
+    el("p", { class: "hint" }, "Спасибо тем, кто бережёт общее время. Значки ничего не дают, кроме уважения."),
+    h.board.categories.map((c) => el("div", { class: "item" },
+      el("b", {}, c.title),
+      c.people.length
+        ? c.people.map((p) => el("div", { class: "row" }, el(p.me ? "b" : "span", {}, `${p.place}. ${who(p.user)}`), el("span", { class: "hint" }, p.value)))
+        : el("div", { class: "hint" }, "На этой неделе здесь пока пусто."))),
+    el("p", { class: "hint", style: "margin:12px 0 0" },
+      `Неделя считается с понедельника. Отметки, которые сняли в течение ${h.revert} минут, не считаются. Не хочешь на доску — включи «Не показывать моё имя».`),
+  ];
+}
+
+async function openHonor() {
+  openSheet("Доска почёта", el("p", { class: "hint" }, "Загрузка…"));
+  let h;
+  try {
+    h = await api("/api/honor");
+  } catch (e) {
+    closeSheet();
+    if (web && e.status === 401) signIn(e.message, e.bot); else warn(e.message);
+    return;
+  }
+  if (sheet.hidden) return;
+  seeBadges();
+  render();
+  openSheet("Доска почёта", honorBody(h));
 }
 
 function problemCard() {
@@ -1382,6 +1470,7 @@ function laundryView() {
     mineCard(),
     typeCard(),
     movedCard(),
+    honorCard(),
     adminCard("laundry"),
   ];
 }
@@ -1438,6 +1527,7 @@ function render() {
     dmCard(),
     ...(section === "playroom" ? roomView() : laundryView()),
     privacyCard(),
+    section === "laundry" ? digestCard() : null,
     problemCard(),
     accountCard(),
   ].filter(Boolean));

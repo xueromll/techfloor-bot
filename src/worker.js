@@ -27,7 +27,7 @@ const AUTH_CACHE_SECONDS = 300;
 const AUTH_CACHE_MAX = 200;
 const SWEEP_SECONDS = 600;
 const RECENT_SECONDS = 120;
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 const ROOM_USER_BOOKINGS = 3;
 const INIT_DATA_MAX = 4096;
 const API_BODY_MAX = 8 * 1024;
@@ -38,6 +38,18 @@ const BLOCK_CACHE_MAX = 500;
 const HITS_MAX = 10000;
 const BLOCK_MAX_DAYS = 365;
 const BROKEN_NOTE_LENGTH = 100;
+const NAG_HOURS = [1, 3, 5];
+const SNOOZE_MINUTES = 15;
+const SNOOZE_MAX = 2;
+const DIGEST_HOUR = 20;
+const DIGEST_ACTIVE_DAYS = 14;
+const DIGEST_BATCH = 10;
+const PEAK_HOURS = [14, 16, 19, 21];
+const QUIET_HOURS = [2, 10];
+const LIGHTNING_MINUTES = 10;
+const CLEAN_MINUTES = 60;
+const HERO_REVERT_MINUTES = 30;
+const HERO_WEEK_CAP = 5;
 const NEVER = 1e12;
 const LOGIN_MINUTES = 10;
 const SESSION_DAYS = 30;
@@ -96,6 +108,25 @@ const ROOM_HELP =
   "вечером накануне я спрошу, нужна ли бронь на завтра, и напомню за полчаса до начала. " +
   "Теперь я могу тебе писать.\n\n" +
   "Что-то не работает? Отправь /problem и опиши проблему.";
+
+const BADGES = [
+  { id: "lightning", name: "Молния", text: `Забираешь бельё в первые ${LIGHTNING_MINUTES} минут после конца программы`, board: "Быстрее всех забирают бельё", need: 3 },
+  { id: "hero", name: "Герой прачечной", text: "Отмечаешь машины, которые запустили без бота, и вещи без программы", board: "Чаще всех отмечают машины", need: 2 },
+  { id: "owl", name: "Сова", text: `Стираешь с ${QUIET_HOURS[0]} до ${QUIET_HOURS[1]} утра, когда в прачечной пусто`, board: "Стирают, пока все спят", need: 2 },
+  { id: "clean", name: "Чистая неделя", text: "Всю неделю вещи забраны меньше чем за час", need: 2 },
+];
+
+const DONE_COMMAND = "/maintenance_done";
+const DONE_KEY = "notice_maintenance_done";
+const DONE_NOTICE =
+  "<b>технические работы закончились</b>\n\n" +
+  "бот снова работает в обычном режиме. спасибо, что потерпели 🙏\n\n" +
+  "что нового:\n" +
+  "- приложение теперь открывается без VPN;\n" +
+  "- напоминания забрать вещи с кнопками «вещи забраны», «через 15 мин» и «можно переложить»;\n" +
+  "- вечерняя сводка по прачечной в личку — включается галочкой в приложении;\n" +
+  "- значки: «молния», «герой прачечной», «сова» и «чистая неделя».\n\n" +
+  "если что-то сломалось или работает странно, напишите в @technical_floor_bot /problem.";
 
 const PROBLEM_ASK = "Опиши проблему одним сообщением";
 const PROBLEM_FILE_MB = 20;
@@ -165,6 +196,8 @@ const SCHEMA = [
     started_at REAL NOT NULL, ends_at REAL NOT NULL, kind TEXT NOT NULL DEFAULT 'run', warned INTEGER NOT NULL DEFAULT 0,
     reporter_id INTEGER, reporter_name TEXT, reporter_username TEXT, finished_at REAL, note TEXT,
     planned_at REAL, editors TEXT, editor_id INTEGER, editor_name TEXT, editor_username TEXT, warn_msg INTEGER,
+    nag INTEGER NOT NULL DEFAULT 0, snooze_until REAL, snoozes INTEGER NOT NULL DEFAULT 0,
+    movable INTEGER NOT NULL DEFAULT 0, called INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (chat_id, mtype, num))`,
   `CREATE TABLE IF NOT EXISTS boards (chat_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL, text TEXT, thread_id INTEGER)`,
   `CREATE TABLE IF NOT EXISTS queue (
@@ -186,6 +219,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS people (
     chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, name TEXT NOT NULL, username TEXT,
     hidden INTEGER NOT NULL DEFAULT 0, seen_at REAL NOT NULL,
+    digest INTEGER NOT NULL DEFAULT 0, digest_asked INTEGER NOT NULL DEFAULT 0, digest_day TEXT,
     PRIMARY KEY (chat_id, user_id))`,
   `CREATE TABLE IF NOT EXISTS pboards (chat_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL, text TEXT, thread_id INTEGER)`,
   `CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value)`,
@@ -218,6 +252,9 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY, kind TEXT NOT NULL, user_id INTEGER NOT NULL, name TEXT NOT NULL, username TEXT,
     chat_id INTEGER NOT NULL, expires_at REAL NOT NULL, created_at REAL NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS badges (
+    chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, badge TEXT NOT NULL, week REAL NOT NULL, value INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, user_id, badge, week))`,
 ];
 
 const MIGRATIONS = [
@@ -240,20 +277,28 @@ const MIGRATIONS = [
   "ALTER TABLE machines ADD COLUMN editor_name TEXT",
   "ALTER TABLE machines ADD COLUMN editor_username TEXT",
   "ALTER TABLE machines ADD COLUMN warn_msg INTEGER",
+  "ALTER TABLE machines ADD COLUMN nag INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE machines ADD COLUMN snooze_until REAL",
+  "ALTER TABLE machines ADD COLUMN snoozes INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE machines ADD COLUMN movable INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE machines ADD COLUMN called INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE people ADD COLUMN digest INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE people ADD COLUMN digest_asked INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE people ADD COLUMN digest_day TEXT",
 ];
 
 const NUMBERS = WALLS.flat();
-const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings", "room_joins", "room_requests", "blocks", "events", "sessions"];
+const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings", "room_joins", "room_requests", "blocks", "events", "sessions", "badges"];
 const UNKNOWN = { id: 0, name: "неизвестно", username: null };
 
 const LEFTOVER = new Set(["done", "parked", "loaded"]);
 const REPLACEABLE = new Set(["hold", "done", "loaded"]);
 const ROOM_ACTIONS = new Set(["room_book", "room_edit", "room_cancel", "room_join", "room_leave", "room_ask", "room_unask", "room_answer", "admin_reset_room", "privacy"]);
 const PLAYROOM_ONLY = new Set(["room_book", "room_edit", "room_cancel", "room_join", "room_leave", "room_ask", "room_unask", "room_answer", "admin_reset_room"]);
-const LAUNDRY_ONLY = new Set(["take", "load", "claim", "free", "queue", "unqueue", "next", "unnext", "book", "unbook", "move", "picked", "broken", "fixed", "retime", "admin_reset_laundry"]);
+const LAUNDRY_ONLY = new Set(["take", "load", "claim", "free", "queue", "unqueue", "next", "unnext", "book", "unbook", "move", "picked", "broken", "fixed", "retime", "admin_reset_laundry", "digest"]);
 const ANNOUNCING = new Set(["room_book", "room_edit", "room_cancel"]);
-const UNPINNED = new Set(["dm", "problem"]);
-const COMMANDS = ["/start", "/problem", "/status", "/login", "/board", "/playroom", "/unpin", "/block", "/unblock", "/blocked"];
+const UNPINNED = new Set(["dm", "problem", "digest"]);
+const COMMANDS = ["/start", "/problem", "/status", "/login", "/board", "/playroom", "/unpin", "/block", "/unblock", "/blocked", DONE_COMMAND];
 const memberCache = new Map();
 const authCache = new Map();
 const blockCache = new Map();
@@ -388,6 +433,7 @@ export default {
       if (url.pathname === "/setup") return await onSetup(url, env, ip);
       if (url.pathname === "/api/state") return await apiState(request, env);
       if (url.pathname === "/api/action" && request.method === "POST") return await apiAction(request, env);
+      if (url.pathname === "/api/honor") return await apiHonor(request, env);
       if (url.pathname === "/api/login" && request.method === "POST") return await apiLogin(request, env, url, ip);
       if (url.pathname === "/api/logout" && request.method === "POST") return await apiLogout(request, env, url);
       return respond("Not found", 404);
@@ -601,15 +647,43 @@ function parseMinutes(text) {
   return null;
 }
 
-function localMidnight(env, daysAhead) {
-  const parts = Object.fromEntries(
+function localParts(env, ts) {
+  return Object.fromEntries(
     fmt(env, "en-US", {
       year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric", hourCycle: "h23",
-    }).formatToParts(new Date()).map((p) => [p.type, Number(p.value)])
+    }).formatToParts(new Date(ts * 1000)).map((p) => [p.type, Number(p.value)])
   );
-  const localNow = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
-  const offset = localNow - Math.floor(Date.now() / 1000) * 1000;
-  return (Date.UTC(parts.year, parts.month - 1, parts.day + daysAhead) - offset) / 1000;
+}
+
+function tzOffset(env, ts) {
+  const parts = localParts(env, ts);
+  return (Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second) - Math.floor(ts) * 1000) / 1000;
+}
+
+function localMidnight(env, daysAhead) {
+  const t = Math.floor(now());
+  const parts = localParts(env, t);
+  return Date.UTC(parts.year, parts.month - 1, parts.day + daysAhead) / 1000 - tzOffset(env, t);
+}
+
+function weekStart(env, weeks = 0) {
+  const parts = localParts(env, now());
+  const weekday = (new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay() + 6) % 7;
+  return localMidnight(env, 7 * weeks - weekday);
+}
+
+function weekLabel(env, start) {
+  const parts = (ts) => Object.fromEntries(
+    fmt(env, "ru-RU", { day: "numeric", month: "short" }).formatToParts(new Date(ts * 1000)).map((p) => [p.type, p.value.replace(".", "")])
+  );
+  const a = parts(start);
+  const b = parts(start + 6 * 86400 + 3600);
+  return a.month === b.month ? `${a.day}–${b.day} ${b.month}` : `${a.day} ${a.month} – ${b.day} ${b.month}`;
+}
+
+function hoursText(n) {
+  const tail = n % 10 === 1 && n % 100 !== 11 ? "час" : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? "часа" : "часов";
+  return `${n} ${tail}`;
 }
 
 function slots(env) {
@@ -636,18 +710,25 @@ async function setDm(env, userId, ok) {
   await env.DB.prepare("INSERT OR REPLACE INTO dm (user_id, ok) VALUES (?, ?)").bind(userId, ok ? 1 : 0).run();
 }
 
+async function tagOf(env, chatId, p) {
+  return (await isHidden(env, chatId, p.id)) ? `<a href="tg://user?id=${p.id}">${ANONYMOUS}</a>` : tag(p);
+}
+
 async function mentionText(env, chatId, p, text) {
-  const who = (await isHidden(env, chatId, p.id)) ? `<a href="tg://user?id=${p.id}">${ANONYMOUS}</a>` : tag(p);
-  return `${who}, ${text}`;
+  return `${await tagOf(env, chatId, p)}, ${text}`;
+}
+
+async function closedDmText(env, row, head, tail) {
+  return `${head} ${await tagOf(env, row.chat_id, person(row))}, у тебя закрыты личные сообщения — ${tail}`;
 }
 
 async function mention(env, chatId, p, text, table = "boards") {
   await say(env, chatId, await mentionText(env, chatId, p, text), {}, table);
 }
 
-async function notice(env, chatId, p, text) {
+async function notice(env, chatId, p, text, buttons = []) {
   if (!p || !p.id) return false;
-  const markup = { inline_keyboard: [[{ text: "Открыть прачечную", url: await appLink(env, chatId) }]] };
+  const markup = { inline_keyboard: [...buttons, [{ text: "Открыть прачечную", url: await appLink(env, chatId) }]] };
   const dm = await tg(env, "sendMessage", { chat_id: p.id, text: capitalize(text), parse_mode: "HTML", reply_markup: markup });
   if (dm.ok) {
     await setDm(env, p.id, true);
@@ -655,10 +736,6 @@ async function notice(env, chatId, p, text) {
   }
   if (dm.error_code === 403 || /chat not found/i.test(dm.description || "")) await setDm(env, p.id, false);
   return false;
-}
-
-async function machineText(env, row, text, unknownText) {
-  return row.user_id ? mentionText(env, row.chat_id, person(row), text) : unknownText;
 }
 
 async function warnChat(env, row, text) {
@@ -676,6 +753,88 @@ async function nudge(env, chatId, from, p, text) {
   if (!p || !p.id) return;
   if (p.id !== from.id && spend(env, "nudge", `${from.id}:${p.id}`)) return;
   await notice(env, chatId, p, text);
+}
+
+function pickupButtons(row) {
+  const id = `${row.chat_id}:${row.mtype}:${row.num}:${row.started_at}`;
+  return [
+    [{ text: "Вещи забраны", callback_data: `lp:${id}` }],
+    [{ text: `Через ${SNOOZE_MINUTES} мин`, callback_data: `lz:${id}` }, { text: "Можно переложить", callback_data: `lm:${id}` }],
+  ];
+}
+
+async function waitingFor(env, row) {
+  const [queued, next] = await batch(
+    env,
+    q(env, "SELECT * FROM queue WHERE chat_id = ? AND mtype = ? ORDER BY priority, id", row.chat_id, row.mtype),
+    q(env, "SELECT * FROM nexts WHERE chat_id = ? AND mtype = ? AND num = ?", row.chat_id, row.mtype, row.num)
+  );
+  return { queued, next: next[0] ?? null, any: queued.length > 0 || next.length > 0 };
+}
+
+const REMINDER_ORDINALS = { 4: "четвёртое", 5: "пятое", 6: "шестое" };
+
+function nagText(row, level) {
+  const hours = NAG_HOURS[level - 1];
+  if (level === 1) return `${mname(row.mtype, row.num)} закончила ${hours === 1 ? "час" : hoursText(hours)} назад, бельё всё ещё ждёт тебя. Забежишь?`;
+  return `Бельё в ${MACHINES[row.mtype].prep} ${row.num} лежит уже ${hoursText(hours)}. Не успеваешь — нажми «Можно переложить», и следующий аккуратно переложит вещи в свободную машину или на гладильную доску.`;
+}
+
+async function lastNagText(env, row, waiting) {
+  const name = mname(row.mtype, row.num);
+  const at = clock(env, row.finished_at);
+  const where = `${MACHINES[row.mtype].prep} ${row.num}`;
+  const hours = hoursText(NAG_HOURS[NAG_HOURS.length - 1]);
+  const ordinal = REMINDER_ORDINALS[NAG_HOURS.length + 1 + row.snoozes];
+  const variants = [
+    `${name} закончила в ${at}. Прошло ${hours} — бельё всё ещё там.`,
+    ordinal && `Это уже ${ordinal} напоминание. Следующим будет почтовый голубь. ${name}, бельё готово с ${at}.`,
+    `${capitalize(hours)} после конца программы. Бельё в ${where} готово, а ${MACHINES[row.mtype].name.toLowerCase()} — нет: она всё ещё занята.`,
+    waiting.any && `Бельё в ${where} готово с ${at}, а машину уже ждут. Забери, пожалуйста, или нажми «Можно переложить».`,
+    row.mtype === "d" && `Бельё в ${where} давно остыло. Можно забирать — с ${at}.`,
+  ];
+  const slot = `nag:${row.user_id}`;
+  const last = await first(env, "SELECT value FROM meta WHERE key = ?", slot);
+  const options = variants.map((text, i) => (text && i !== Number(last?.value ?? -1) ? i : null)).filter((i) => i !== null);
+  const pick = options[Math.floor(Math.random() * options.length)];
+  await env.DB.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").bind(slot, pick).run();
+  return variants[pick];
+}
+
+function calledText(env, row, waiting) {
+  const queue = waiting.queued.length ? `а в очереди уже ${waiting.queued.length}` : "а машину уже ждут";
+  const ask = row.movable
+    ? "Хозяин разрешил их переложить — в свободную машину или на гладильную доску через приложение."
+    : "Хозяин, отзовись. Если ждёшь ты — вещи можно переложить в свободную машину или на гладильную доску через приложение.";
+  return `${mname(row.mtype, row.num)} закончила в ${clock(env, row.finished_at)}, вещи всё ещё внутри, ${queue}. ${ask}`;
+}
+
+async function remind(env, row, t) {
+  const due = NAG_HOURS.filter((h) => row.finished_at + h * 3600 <= t).length;
+  const level = Math.max(row.nag, due);
+  const ok = await changed(
+    env,
+    "UPDATE machines SET nag = ?, snooze_until = NULL WHERE chat_id = ? AND mtype = ? AND num = ? AND started_at = ? AND kind = 'done' AND nag = ? AND snooze_until IS ?",
+    level, row.chat_id, row.mtype, row.num, row.started_at, row.nag, row.snooze_until ?? null
+  );
+  if (!ok) return;
+  const last = level === NAG_HOURS.length && row.nag < level;
+  const waiting = last ? await waitingFor(env, row) : null;
+  if (row.user_id && !row.movable) {
+    const text = level === row.nag
+      ? `напоминаю: ${mname(row.mtype, row.num).toLowerCase()} закончила в ${clock(env, row.finished_at)}, бельё ждёт тебя.`
+      : last ? await lastNagText(env, row, waiting) : nagText(row, level);
+    await notice(env, row.chat_id, person(row), text, pickupButtons(row));
+  }
+  if (last && waiting.any) {
+    await warnChat(env, row, calledText(env, row, waiting));
+    await env.DB.prepare("UPDATE machines SET called = 1 WHERE chat_id = ? AND mtype = ? AND num = ? AND started_at = ?")
+      .bind(row.chat_id, row.mtype, row.num, row.started_at).run();
+  }
+}
+
+async function settleChat(env, row, text) {
+  if (row.called && row.warn_msg) await tg(env, "editMessageText", { chat_id: row.chat_id, message_id: row.warn_msg, text, parse_mode: "HTML" });
 }
 
 async function busyMap(env, chatId) {
@@ -807,7 +966,8 @@ async function dispatch(env, chatId, mtype) {
 async function tickLaundry(env, t, chatId) {
   const scope = chatId === null ? "" : " AND chat_id = ?";
   const arg = chatId === null ? [] : [chatId];
-  const [warnDue, expired, dueBookings, hungry] = await batch(
+  const nagAfter = `CASE nag ${NAG_HOURS.map((h, i) => `WHEN ${i} THEN ${h * 3600}`).join(" ")} END`;
+  const [warnDue, expired, dueBookings, hungry, nagDue] = await batch(
     env,
     q(env,
       "SELECT * FROM machines WHERE kind = 'run' AND warned = 0 AND ends_at > ? AND ends_at - ? <= ? AND ends_at - started_at > ?" + scope,
@@ -817,7 +977,11 @@ async function tickLaundry(env, t, chatId) {
     q(env,
       "SELECT chat_id, mtype FROM (SELECT DISTINCT chat_id, mtype FROM queue WHERE 1 = 1" + scope + ") AS waiting " +
         "WHERE (SELECT COUNT(*) FROM machines m WHERE m.chat_id = waiting.chat_id AND m.mtype = waiting.mtype) < ?",
-      ...arg, NUMBERS.length)
+      ...arg, NUMBERS.length),
+    q(env,
+      `SELECT * FROM machines WHERE kind = 'done' AND finished_at IS NOT NULL AND ends_at > ? AND (finished_at + ${nagAfter} <= ? OR snooze_until <= ?) ` +
+        "AND (snooze_until IS NULL OR snooze_until <= ?)" + scope,
+      t, t, t, t, ...arg)
   );
   const dirty = new Set();
 
@@ -832,7 +996,7 @@ async function tickLaundry(env, t, chatId) {
       if (!ok) continue;
       const soon = `${mname(row.mtype, row.num)} закончит через ${left} мин.`;
       if (!(await notice(env, row.chat_id, person(row), soon))) {
-        await warnChat(env, row, await machineText(env, row, soon, `${soon} Хозяин вещей не отмечен.`));
+        await warnChat(env, row, row.user_id ? await closedDmText(env, row, soon, "поэтому напоминаю здесь.") : `${soon} Хозяин вещей не отмечен.`);
       }
       const nxt = await first(env, "SELECT * FROM nexts WHERE chat_id = ? AND mtype = ? AND num = ?", row.chat_id, row.mtype, row.num);
       if (nxt) await notice(env, row.chat_id, person(nxt), `${mname(row.mtype, row.num)} освободится через ${left} мин — она забронирована за тобой.`);
@@ -849,11 +1013,13 @@ async function tickLaundry(env, t, chatId) {
       if (!finished) continue;
       dirty.add(row.chat_id);
       await audit(env, row.chat_id, "finished", null, machineTrail(row));
-      const done = `${mname(row.mtype, row.num)} закончила — забери бельё и отметь в приложении «Вещи забраны».`;
-      await notice(env, row.chat_id, person(row), done);
-      if (row.warn_msg) {
-        const text = await machineText(env, row, done, `${mname(row.mtype, row.num)} закончила. Хозяин вещей не отмечен — если это твои вещи, забери их.`);
-        await tg(env, "editMessageText", { chat_id: row.chat_id, message_id: row.warn_msg, text, parse_mode: "HTML" });
+      const name = mname(row.mtype, row.num);
+      const dm = await notice(env, row.chat_id, person(row), `${name} закончила — забери бельё.`, pickupButtons(row));
+      if (row.warn_msg || (row.user_id && !dm)) {
+        const text = !row.user_id
+          ? `${name} закончила. Хозяин вещей не отмечен — если это твои вещи, забери их.`
+          : dm ? `${name} закончила.` : await closedDmText(env, row, `${name} закончила.`, "забери, пожалуйста, вещи.");
+        await warnChat(env, row, text);
       }
       continue;
     }
@@ -894,6 +1060,8 @@ async function tickLaundry(env, t, chatId) {
     if (await dispatch(env, item.chat_id, item.mtype)) dirty.add(item.chat_id);
   }
 
+  for (const row of nagDue) await remind(env, row, t);
+
   for (const id of dirty) await updatePinned(env, id);
 }
 
@@ -901,6 +1069,10 @@ async function tick(env, chatId = null) {
   const t = now();
   if (laundry(env)) await tickLaundry(env, t, chatId);
   if (chatId !== null) return;
+  if (laundry(env)) {
+    await sendDigests(env, t);
+    await settleBadges(env, t);
+  }
   if (t - cleanupAt > SWEEP_SECONDS) {
     cleanupAt = t;
     await env.DB.batch([
@@ -1057,6 +1229,70 @@ async function laundryStatus(env, chatId, userId) {
     (mine.length ? `\n\n<b>Твоё</b>\n${mine.join("\n")}` : "") +
     "\n\nПоказываю то, что отметили в приложении."
   );
+}
+
+const digestHour = (env) => Number(env.DIGEST_HOUR ?? DIGEST_HOUR);
+const hourText = (h) => `${String(h).padStart(2, "0")}:00`;
+
+async function digestView(env, chatId) {
+  const t = now();
+  const busy = await busyMap(env, chatId);
+  const runs = [...busy.values()].filter((r) => r.kind === "run").sort((a, b) => a.ends_at - b.ends_at);
+  const open = Object.entries(MACHINES)
+    .map(([mtype, cfg]) => [cfg, NUMBERS.filter((n) => !busy.has(key(mtype, n)))])
+    .filter(([, nums]) => nums.length);
+  const lines = [`<b>Вечер в прачечной</b> · ${dayLabel(env, t)}`];
+  if (open.length) {
+    lines.push(`Свободно: ${open.map(([cfg, nums]) => `${cfg.title.toLowerCase()} ${nums.join(", ")}`).join(" · ")}`);
+    if (runs.length) lines.push(`Скоро освободится: ${mname(runs[0].mtype, runs[0].num).toLowerCase()} — в ${clock(env, runs[0].ends_at)}`);
+  } else {
+    const soon = Object.entries(MACHINES)
+      .map(([mtype, cfg]) => [cfg, runs.find((r) => r.mtype === mtype)])
+      .filter(([, r]) => r)
+      .map(([cfg, r], i) => `${cfg.name.toLowerCase()}${i ? " —" : " освободится"} в ${clock(env, r.ends_at)}`);
+    lines.push(soon.length ? `Сейчас всё занято. Ближайшая ${soon.join(", ")}.` : "Сейчас всё занято.");
+  }
+  const peak = PEAK_HOURS.find((h) => h > localParts(env, t).hour);
+  lines.push("");
+  if (peak !== undefined) lines.push(`В ${hourText(peak)} обычно наплыв. Собираешься стирать сегодня — лучше сейчас.`);
+  lines.push(`Спокойнее всего с ${QUIET_HOURS[0]} до ${QUIET_HOURS[1]} утра.`);
+  return {
+    text: lines.join("\n"),
+    reply_markup: {
+      inline_keyboard: [[{ text: "Открыть прачечную", url: await appLink(env, chatId) }, { text: "Отписаться", callback_data: `d0:${chatId}` }]],
+    },
+  };
+}
+
+async function sendDigests(env, t) {
+  if (localParts(env, t).hour < digestHour(env)) return;
+  const day = fmt(env, "en-CA", {}).format(new Date(t * 1000));
+  const picked = await all(
+    env,
+    "UPDATE people SET digest_day = ? WHERE rowid IN (SELECT p.rowid FROM people p LEFT JOIN dm d ON d.user_id = p.user_id " +
+      "WHERE p.digest = 1 AND COALESCE(p.digest_day, '') != ? AND p.seen_at >= ? AND COALESCE(d.ok, 1) = 1 " +
+      "AND p.chat_id IN (SELECT chat_id FROM boards) " +
+      "AND NOT EXISTS (SELECT 1 FROM blocks k WHERE k.chat_id = p.chat_id AND k.user_id = p.user_id AND (k.until IS NULL OR k.until > ?)) LIMIT ?) " +
+      "RETURNING chat_id, user_id",
+    day, day, t - DIGEST_ACTIVE_DAYS * 86400, t, DIGEST_BATCH
+  );
+  const views = new Map();
+  for (const r of picked) {
+    if (!allowed(env, r.chat_id)) continue;
+    if (!views.has(r.chat_id)) views.set(r.chat_id, await digestView(env, r.chat_id));
+    const res = await tg(env, "sendMessage", { chat_id: r.user_id, parse_mode: "HTML", ...views.get(r.chat_id) });
+    if (!res.ok && (res.error_code === 403 || /chat not found/i.test(res.description || ""))) await setDm(env, r.user_id, false);
+  }
+}
+
+async function offerDigest(env, chatId, p) {
+  if (!(await changed(env, "UPDATE people SET digest_asked = 1 WHERE chat_id = ? AND user_id = ? AND digest_asked = 0 AND digest = 0", chatId, p.id))) return;
+  const res = await tg(env, "sendMessage", {
+    chat_id: p.id,
+    text: `Хочешь каждый вечер в ${hourText(digestHour(env))} короткую сводку — что свободно и когда стирать без очереди?`,
+    reply_markup: { inline_keyboard: [[{ text: "Да, присылай", callback_data: `d1:${chatId}` }, { text: "Не надо", callback_data: `dx:${chatId}` }]] },
+  });
+  if (!res.ok && (res.error_code === 403 || /chat not found/i.test(res.description || ""))) await setDm(env, p.id, false);
 }
 
 async function homeChat(env, userId, tables) {
@@ -1227,6 +1463,7 @@ async function onUpdate(update, env, origin) {
       });
       return;
     }
+    if (command === DONE_COMMAND) return msg.from.id === Number(env.OWNER_ID) ? announceDone(env, chat.id) : undefined;
     if (command === "/status") return tg(env, "sendMessage", { chat_id: chat.id, parse_mode: "HTML", ...(await statusView(env, msg.from.id)) });
     if (command === "/login" || (command === "/start" && msg.text.trim().split(/\s+/)[1] === "login")) {
       return tg(env, "sendMessage", { chat_id: chat.id, ...(await loginView(env, msg.from, origin)) });
@@ -1246,7 +1483,16 @@ async function onUpdate(update, env, origin) {
   if (command === "/playroom") await updateRoomBoard(env, chat.id, true, thread);
   else if (command === "/board" || command === "/start") await updatePinned(env, chat.id, command === "/board", thread);
   else if (command === "/unpin") await unpin(env, msg, thread);
-  else if (command !== "/problem" && command !== "/status" && command !== "/login") await moderate(env, msg, command, thread, anonymousAdmin ? null : msg.from);
+  else if (command !== "/problem" && command !== "/status" && command !== "/login" && command !== DONE_COMMAND) await moderate(env, msg, command, thread, anonymousAdmin ? null : msg.from);
+}
+
+async function announceDone(env, ownerChat) {
+  if (!(await changed(env, "INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)", DONE_KEY, now()))) {
+    return tg(env, "sendMessage", { chat_id: ownerChat, text: "Сообщение о конце технических работ уже отправлено." });
+  }
+  const chats = allowedChats(env);
+  for (const chatId of chats) await say(env, Number(chatId), DONE_NOTICE);
+  return tg(env, "sendMessage", { chat_id: ownerChat, text: `Сообщение о конце технических работ отправлено в чаты: ${chats.join(", ") || "нет разрешённых чатов"}.` });
 }
 
 async function problem(env, msg, text) {
@@ -1435,14 +1681,103 @@ async function moderate(env, msg, command, thread, by) {
   if (rooms || out[5].meta.changes) await updateRoomBoard(env, chatId);
 }
 
+function tapAnswer(env, cq, text) {
+  return tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
+}
+
+function tapRewrite(env, cq, text) {
+  return cq.message
+    ? tg(env, "editMessageText", { chat_id: cq.message.chat.id, message_id: cq.message.message_id, text, parse_mode: "HTML" })
+    : null;
+}
+
+async function tapActor(env, chatId, from) {
+  const row = await first(env, "SELECT name, username FROM people WHERE chat_id = ? AND user_id = ?", chatId, from.id);
+  return { id: from.id, name: row?.name || from.first_name || ANONYMOUS, username: row ? row.username : from.username ?? null };
+}
+
+async function pickupTap(env, cq, what, chatId, mtype, num, started) {
+  const name = mname(mtype, num);
+  const row = laundry(env) && allowed(env, chatId) ? await getMachine(env, chatId, mtype, num) : null;
+  if (!row || row.kind !== "done" || row.started_at !== started) {
+    await tapAnswer(env, cq, "Уже неактуально.");
+    await tapRewrite(env, cq, `${name}: эти вещи уже забрали или переложили.`);
+    return;
+  }
+  if (row.user_id !== cq.from.id) {
+    await tapAnswer(env, cq, "Это не твои вещи.");
+    return;
+  }
+  const actor = await tapActor(env, chatId, cq.from);
+  if (what === "p") {
+    const error = await perform(env, chatId, actor, false, { action: "free", t: mtype, n: num });
+    if (error) {
+      await tapAnswer(env, cq, error);
+      return;
+    }
+    await updatePinned(env, chatId);
+    await tapAnswer(env, cq, "Спасибо!");
+    await tapRewrite(env, cq, `Спасибо! ${name} снова свободна.`);
+    return;
+  }
+  const where = [chatId, mtype, num, row.started_at];
+  if (what === "z") {
+    const until = now() + SNOOZE_MINUTES * 60;
+    const ok = await changed(
+      env,
+      "UPDATE machines SET snooze_until = ?, snoozes = snoozes + 1 WHERE chat_id = ? AND mtype = ? AND num = ? AND started_at = ? AND kind = 'done' AND snoozes < ?",
+      until, ...where, SNOOZE_MAX
+    );
+    if (!ok) {
+      await tapAnswer(env, cq, "Больше откладывать нельзя — напомню по расписанию.");
+      return;
+    }
+    await tapAnswer(env, cq, `Напомню в ${clock(env, until)}.`);
+    await tapRewrite(env, cq, `Напомню в ${clock(env, until)}.`);
+    return;
+  }
+  const ok = await changed(
+    env,
+    "UPDATE machines SET movable = 1, snooze_until = NULL WHERE chat_id = ? AND mtype = ? AND num = ? AND started_at = ? AND kind = 'done' AND movable = 0",
+    ...where
+  );
+  if (ok) {
+    await audit(env, chatId, "movable", actor, machineTrail(row));
+    const waiting = await waitingFor(env, row);
+    const told = new Map();
+    if (waiting.next) told.set(waiting.next.user_id, person(waiting.next));
+    if (waiting.queued.length) told.set(waiting.queued[0].user_id, person(waiting.queued[0]));
+    told.delete(row.user_id);
+    for (const p of told.values()) {
+      await notice(env, chatId, p, `хозяин вещей в ${MACHINES[mtype].prep} ${num} разрешил их переложить — в свободную машину или на гладильную доску, через приложение.`);
+    }
+  }
+  await tapAnswer(env, cq, "Готово.");
+  await tapRewrite(env, cq, "Готово — следующему можно переложить твои вещи. Напишу, куда их положили.");
+}
+
+async function digestTap(env, cq, what, chatId) {
+  const on = what === "1" ? 1 : 0;
+  await env.DB.prepare("UPDATE people SET digest = ?, digest_asked = 1 WHERE chat_id = ? AND user_id = ?").bind(on, chatId, cq.from.id).run();
+  const replies = {
+    1: `Договорились: сводка будет приходить каждый вечер в ${hourText(digestHour(env))}. Отписаться можно кнопкой под сводкой или в настройках приложения.`,
+    0: "Ок, сводки больше не будет. Включить снова — в настройках приложения.",
+    x: "Хорошо, не буду. Включить можно в настройках приложения.",
+  };
+  await tapAnswer(env, cq);
+  await tapRewrite(env, cq, replies[what]);
+}
+
 async function onCallback(env, cq) {
   if (!cq.from || spend(env, "tap", cq.from.id)) return;
-  const parsed = String(cq.data || "").match(/^r([kcl]):(\d+)$|^r([ad]):(\d+):(\d+)$/);
-  const answer = (text) => tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text });
-  const rewrite = (text) =>
-    cq.message
-      ? tg(env, "editMessageText", { chat_id: cq.message.chat.id, message_id: cq.message.message_id, text, parse_mode: "HTML" })
-      : null;
+  const data = String(cq.data || "");
+  const pickup = data.match(/^l([pzm]):(-?\d+):([wd]):(\d+):(\d+(?:\.\d+)?)$/);
+  if (pickup) return pickupTap(env, cq, pickup[1], Number(pickup[2]), pickup[3], Number(pickup[4]), Number(pickup[5]));
+  const evening = data.match(/^d([10x]):(-?\d+)$/);
+  if (evening) return digestTap(env, cq, evening[1], Number(evening[2]));
+  const parsed = data.match(/^r([kcl]):(\d+)$|^r([ad]):(\d+):(\d+)$/);
+  const answer = (text) => tapAnswer(env, cq, text);
+  const rewrite = (text) => tapRewrite(env, cq, text);
   if (!parsed || !playroom(env)) {
     await answer();
     return;
@@ -1786,6 +2121,7 @@ async function authorize(request, env, bucket) {
   if (!inside) throw new ApiError("Приложение доступно только участникам чата.", 403);
   const me = { ...user };
   me.hidden = await remember(env, chatId, me, mine[0]);
+  me.digest = !!mine[0]?.digest;
   return { chatId, me, admin, section };
 }
 
@@ -1817,11 +2153,22 @@ function roomState(days, rows, joins, requests, view, meId) {
   };
 }
 
+function viewer(peopleRows, me, admin) {
+  const hidden = new Set(peopleRows.filter((r) => r.hidden).map((r) => r.user_id));
+  return (p) => {
+    if (!p) return null;
+    if (!p.id || !hidden.has(p.id)) return p;
+    if (p.id === me.id) return { ...p, name: `${ANONYMOUS} (это ты)`, username: null };
+    if (admin) return { id: null, name: `${p.username ? "@" + p.username : p.name} (скрыто)`, username: null };
+    return { id: null, name: ANONYMOUS, username: null };
+  };
+}
+
 async function state(env, chatId, me, admin, section = "laundry") {
   const t = now();
   const rooms = playroom(env);
   const days = rooms ? roomDays(env) : [];
-  const [peopleRows, machineRows, nextRows, bookingRows, queueRows, movedRows, dmRows, boardRows, roomRows = [], joinRows = [], requestRows = []] = await batch(
+  const [peopleRows, machineRows, nextRows, bookingRows, queueRows, movedRows, dmRows, boardRows, badgeRows, roomRows = [], joinRows = [], requestRows = []] = await batch(
     env,
     q(env, "SELECT * FROM people WHERE chat_id = ?", chatId),
     q(env, "SELECT * FROM machines WHERE chat_id = ?", chatId),
@@ -1831,6 +2178,7 @@ async function state(env, chatId, me, admin, section = "laundry") {
     q(env, "SELECT * FROM moved WHERE chat_id = ? AND at >= ? ORDER BY at DESC", chatId, t - CLOTHES_HOURS * 3600),
     q(env, "SELECT ok FROM dm WHERE user_id = ?", me.id),
     q(env, "SELECT 'laundry' AS s FROM boards WHERE chat_id = ? UNION ALL SELECT 'playroom' FROM pboards WHERE chat_id = ?", chatId, chatId),
+    q(env, "SELECT MAX(week) AS week FROM badges WHERE chat_id = ? AND user_id = ?", chatId, me.id),
     ...(rooms
       ? [
           q(env,
@@ -1847,14 +2195,7 @@ async function state(env, chatId, me, admin, section = "laundry") {
         ]
       : [])
   );
-  const hidden = new Set(peopleRows.filter((r) => r.hidden).map((r) => r.user_id));
-  const view = (p) => {
-    if (!p) return null;
-    if (!p.id || !hidden.has(p.id)) return p;
-    if (p.id === me.id) return { ...p, name: `${ANONYMOUS} (это ты)`, username: null };
-    if (admin) return { id: null, name: `${p.username ? "@" + p.username : p.name} (скрыто)`, username: null };
-    return { id: null, name: ANONYMOUS, username: null };
-  };
+  const view = viewer(peopleRows, me, admin);
   const busy = new Map(machineRows.map((r) => [key(r.mtype, r.num), r]));
   const nexts = new Map(nextRows.map((r) => [key(r.mtype, r.num), r]));
   const booked = new Map();
@@ -1873,6 +2214,7 @@ async function state(env, chatId, me, admin, section = "laundry") {
         const showReporter = row.kind !== "parked" || admin || row.reporter_id === me.id;
         Object.assign(item, { owner: view(person(row)), ends: row.ends_at, reporter: showReporter ? view(person(row, "reporter")) : null, finished: row.finished_at });
         if (row.kind === "broken") item.note = row.note || "";
+        if (row.kind === "done") item.movable = !!row.movable;
         if (row.kind === "run") {
           const editors = editorsOf(row);
           Object.assign(item, { started: row.started_at, planned: row.planned_at, editor: view(person(row, "editor")), edits: editors.length, editedByMe: editors.includes(me.id) });
@@ -1910,6 +2252,10 @@ async function state(env, chatId, me, admin, section = "laundry") {
     timerEdits: TIMER_EDITS,
     timerShift: TIMER_SHIFT_MINUTES,
     bookingGap: BOOKING_GAP_MINUTES,
+    nagHours: NAG_HOURS,
+    snooze: SNOOZE_MINUTES,
+    digestHour: hourText(digestHour(env)),
+    badgeWeek: badgeRows[0]?.week ?? null,
     machines,
     queue,
     bookings,
@@ -1924,6 +2270,114 @@ async function state(env, chatId, me, admin, section = "laundry") {
     sections: { laundry: laundry(env) && boards.has("laundry"), playroom: rooms && boards.has("playroom") },
     room: rooms ? roomState(days, roomRows, joinRows, requestRows, view, me.id) : null,
     problems: Number(env.OWNER_ID) ? { kinds: PROBLEM_KINDS, length: PROBLEM_LENGTH } : null,
+  };
+}
+
+async function badgeCounts(env, chatId, from, to, t) {
+  const offset = tzOffset(env, from);
+  const [lightning, hero, owl, clean] = await batch(
+    env,
+    q(env,
+      "SELECT actor_id AS user_id, COUNT(*) AS value FROM events WHERE chat_id = ? AND at >= ? AND at < ? AND actor_id = owner_id AND (" +
+        "(action = 'free' AND json_extract(details, '$.kind') = 'done' AND at - json_extract(details, '$.finished_at') <= ?) OR " +
+        "(action = 'take' AND json_extract(details, '$.replaced.kind') = 'done' AND at - json_extract(details, '$.replaced.finished_at') <= ?)) " +
+        "GROUP BY actor_id",
+      chatId, from, to, LIGHTNING_MINUTES * 60, LIGHTNING_MINUTES * 60),
+    q(env,
+      "SELECT actor_id AS user_id, COUNT(*) AS value FROM (SELECT e.actor_id FROM events e " +
+        "WHERE e.chat_id = ? AND e.at >= ? AND e.at < ? AND e.action IN ('take', 'load') AND e.owner_id IS NULL AND e.actor_id IS NOT NULL " +
+        "AND NOT EXISTS (SELECT 1 FROM events f WHERE f.chat_id = e.chat_id AND f.action = 'free' AND f.mtype = e.mtype AND f.num = e.num " +
+        "AND f.at >= e.at AND f.at <= e.at + ? AND (f.actor_id = e.actor_id OR json_extract(f.details, '$.admin') = 1)) " +
+        "GROUP BY e.actor_id, e.mtype, e.num, CAST((e.at - ?) / 86400 AS INTEGER)) GROUP BY actor_id",
+      chatId, from, to, HERO_REVERT_MINUTES * 60, from),
+    q(env,
+      "SELECT owner_id AS user_id, COUNT(*) AS value FROM (SELECT owner_id FROM events " +
+        "WHERE chat_id = ? AND at >= ? AND at < ? AND action = 'take' AND owner_id IS NOT NULL " +
+        "AND CAST(strftime('%H', at + ?, 'unixepoch') AS INTEGER) >= ? AND CAST(strftime('%H', at + ?, 'unixepoch') AS INTEGER) < ? " +
+        "GROUP BY owner_id, mtype, num, CAST((at - ?) / 86400 AS INTEGER)) GROUP BY owner_id",
+      chatId, from, to, offset, QUIET_HOURS[0], offset, QUIET_HOURS[1], from),
+    q(env,
+      "SELECT owner_id AS user_id, COUNT(*) AS runs, SUM(ok) AS ok FROM (SELECT f.owner_id, (? - json_extract(f.details, '$.ends_at') <= ? OR EXISTS (" +
+        "SELECT 1 FROM events p WHERE p.chat_id = f.chat_id AND p.at >= f.at AND p.mtype = f.mtype AND p.num = f.num AND p.actor_id = f.owner_id " +
+        "AND p.at - json_extract(f.details, '$.ends_at') <= ? AND (" +
+        "(p.action = 'free' AND json_extract(p.details, '$.started_at') = json_extract(f.details, '$.started_at')) OR " +
+        "(p.action = 'take' AND json_extract(p.details, '$.replaced.started_at') = json_extract(f.details, '$.started_at'))))) AS ok " +
+        "FROM events f WHERE f.chat_id = ? AND f.at >= ? AND f.at < ? AND f.action = 'finished' AND f.owner_id IS NOT NULL) GROUP BY owner_id",
+      t, CLEAN_MINUTES * 60, CLEAN_MINUTES * 60, chatId, from, to)
+  );
+  const counts = new Map();
+  const of = (id) => {
+    if (!counts.has(id)) counts.set(id, { lightning: 0, hero: 0, owl: 0, clean: 0, late: 0 });
+    return counts.get(id);
+  };
+  for (const r of lightning) of(r.user_id).lightning = r.value;
+  for (const r of hero) of(r.user_id).hero = Math.min(r.value, HERO_WEEK_CAP);
+  for (const r of owl) of(r.user_id).owl = r.value;
+  for (const r of clean) Object.assign(of(r.user_id), { clean: r.ok, late: r.runs - r.ok });
+  return counts;
+}
+
+function earned(counts, badge) {
+  return counts[badge.id] >= badge.need && !(badge.id === "clean" && counts.late);
+}
+
+async function settleBadges(env, t) {
+  const week = weekStart(env, 0);
+  if (t < week + CLEAN_MINUTES * 60) return;
+  const settled = await first(env, "SELECT value FROM meta WHERE key = 'badges_week'");
+  if (Number(settled?.value) === week) return;
+  const from = weekStart(env, -1);
+  for (const { chat_id: chatId } of await all(env, "SELECT chat_id FROM boards")) {
+    const rows = [...(await badgeCounts(env, chatId, from, week, t))]
+      .flatMap(([userId, counts]) => BADGES.filter((b) => earned(counts, b)).map((b) => [userId, b.id, counts[b.id]]));
+    if (!rows.length) continue;
+    await env.DB.batch(rows.map(([userId, badge, value]) =>
+      env.DB.prepare("INSERT OR REPLACE INTO badges (chat_id, user_id, badge, week, value) VALUES (?, ?, ?, ?, ?)").bind(chatId, userId, badge, from, value)));
+  }
+  await env.DB.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('badges_week', ?)").bind(week).run();
+}
+
+async function honor(env, chatId, me, admin) {
+  const t = now();
+  const week = weekStart(env, 0);
+  const last = weekStart(env, -1);
+  const live = (await badgeCounts(env, chatId, week, weekStart(env, 1), t)).get(me.id) ?? { lightning: 0, hero: 0, owl: 0, clean: 0, late: 0 };
+  const [history, board, peopleRows] = await batch(
+    env,
+    q(env, "SELECT badge, MAX(week) AS week, COUNT(*) AS times FROM badges WHERE chat_id = ? AND user_id = ? GROUP BY badge", chatId, me.id),
+    q(env, "SELECT user_id, badge, value FROM badges WHERE chat_id = ? AND week = ? ORDER BY value DESC, user_id", chatId, last),
+    q(env, "SELECT * FROM people WHERE chat_id = ?", chatId)
+  );
+  const view = viewer(peopleRows, me, admin);
+  const names = new Map(peopleRows.map((r) => [r.user_id, { id: r.user_id, name: r.name, username: r.username }]));
+  const ranked = (rows) => {
+    const out = [];
+    let place = 0;
+    let prev = null;
+    for (const r of rows) {
+      if (r.value !== prev) {
+        place += 1;
+        prev = r.value;
+      }
+      if (place > 3) break;
+      out.push({ place, value: r.value, me: r.user_id === me.id, user: view(names.get(r.user_id) ?? { id: r.user_id, name: ANONYMOUS, username: null }) });
+    }
+    return out;
+  };
+  return {
+    week: weekLabel(env, week),
+    revert: HERO_REVERT_MINUTES,
+    mine: BADGES.map((b) => {
+      const got = history.find((h) => h.badge === b.id);
+      return {
+        id: b.id, name: b.name, text: b.text, need: b.need, value: live[b.id], late: b.id === "clean" ? live.late : 0,
+        earned: got ? { week: weekLabel(env, got.week), times: got.times } : null,
+      };
+    }),
+    board: {
+      week: weekLabel(env, last),
+      categories: BADGES.filter((b) => b.board).map((b) => ({ id: b.id, title: b.board, people: ranked(board.filter((r) => r.badge === b.id)) })),
+    },
   };
 }
 
@@ -2168,6 +2622,7 @@ const ACTIONS = {
     Object.assign(trail, { mtype, num, owner: owner.id ? owner : null, details: { minutes, replaced: row ? machineTrail(row).details : null } });
     if (!(await occupy(env, chatId, mtype, num, owner, t, t + minutes * 60, "run", reporter, replaces))) return `${mname(mtype, num)} уже занята.`;
     await clearOwnerHolds(env, chatId, mtype, num, owner);
+    if (row?.kind === "done") await settleChat(env, row, `${mname(mtype, num)} освободилась. Спасибо!`);
     return null;
   },
 
@@ -2219,6 +2674,7 @@ const ACTIONS = {
     if (row.kind === "parked") {
       await env.DB.prepare("DELETE FROM moved WHERE chat_id = ? AND to_mtype = ? AND to_num = ? AND owner_id = ?").bind(chatId, mtype, num, row.user_id).run();
     }
+    if (row.kind === "done") await settleChat(env, row, `${mname(mtype, num)} освободилась. Спасибо!`);
     if (row.user_id && row.user_id !== me.id) {
       const who = await label(env, chatId, me);
       const text = LEFTOVER.has(row.kind)
@@ -2227,6 +2683,7 @@ const ACTIONS = {
       await nudge(env, chatId, me, person(row), text);
     }
     await handoff(env, chatId, mtype, num);
+    if (row.kind === "done" && row.user_id === me.id) await offerDigest(env, chatId, me);
     return null;
   },
 
@@ -2333,6 +2790,10 @@ const ACTIONS = {
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).bind(chatId, ownerP.id, ownerP.name, ownerP.username ?? null, ...src, dest ? dest[0] : null, dest ? dest[1] : null, me.id, me.name, me.username ?? null, now()).run();
     const where = dest ? `в ${capitalize(MACHINES[dest[0]].acc)} ${dest[1]}` : "на гладильную доску";
+    if (row.kind === "done") {
+      const place = dest ? `в ${MACHINES[dest[0]].acc} ${dest[1]}` : "на гладильную доску";
+      await settleChat(env, row, `Вещи из ${MACHINES[src[0]].gen.toLowerCase()} ${src[1]} переложили ${place}. Хозяин, они там.`);
+    }
     if (ownerP.id && ownerP.id !== me.id) {
       await nudge(
         env,
@@ -2480,6 +2941,11 @@ const ACTIONS = {
     const hidden = body.hidden ? 1 : 0;
     await env.DB.prepare("UPDATE people SET hidden = ? WHERE chat_id = ? AND user_id = ?").bind(hidden, chatId, me.id).run();
     me.hidden = !!hidden;
+    return null;
+  },
+
+  async digest(env, chatId, me, admin, body) {
+    await env.DB.prepare("UPDATE people SET digest = ?, digest_asked = 1 WHERE chat_id = ? AND user_id = ?").bind(body.on ? 1 : 0, chatId, me.id).run();
     return null;
   },
 
@@ -2670,6 +3136,21 @@ async function apiState(request, env) {
   return json(await state(env, chatId, me, admin, section));
 }
 
+async function perform(env, chatId, actor, admin, body) {
+  const trail = {};
+  const error = await ACTIONS[body.action](env, chatId, actor, admin, body, trail);
+  if (error) return error;
+  const { action: _, ...fields } = body;
+  await audit(env, chatId, body.action, actor, { ...trail, details: { ...fields, ...trail.details, admin } });
+  return null;
+}
+
+async function apiHonor(request, env) {
+  if (!laundry(env)) throw new ApiError("Прачечная сейчас выключена.", 404);
+  const { chatId, me, admin } = await authorize(request, env, "state");
+  return json(await honor(env, chatId, me, admin));
+}
+
 async function apiAction(request, env) {
   const { chatId, me, admin, section } = await authorize(request, env, "action");
   const body = await readObject(request, API_BODY_MAX);
@@ -2682,13 +3163,11 @@ async function apiAction(request, env) {
   }
   await tick(env, chatId);
   const actor = { id: me.id, name: me.name, username: me.username };
-  const trail = {};
-  const error = await action(env, chatId, actor, admin, body, trail);
+  const error = await perform(env, chatId, actor, admin, body);
   if (error) throw new ApiError(error);
-  const { action: _, ...fields } = body;
-  await audit(env, chatId, body.action, actor, { ...trail, details: { ...fields, ...trail.details, admin } });
   if (announces) spend(env, "room", me.id);
   if (body.action === "privacy") me.hidden = !!body.hidden;
+  if (body.action === "digest") me.digest = !!body.on;
   if (ROOM_ACTIONS.has(body.action)) await updateRoomBoard(env, chatId);
   else if (!UNPINNED.has(body.action)) await updatePinned(env, chatId);
   return json(await state(env, chatId, me, admin, section));

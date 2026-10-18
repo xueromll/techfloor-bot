@@ -1,6 +1,6 @@
 import os, subprocess, sys
 
-SUITES = ("drive.py", "done.py", "room.py", "auth.py", "race.py", "abuse.py", "web.py")
+SUITES = ("drive.py", "done.py", "room.py", "auth.py", "race.py", "abuse.py", "web.py", "habits.py")
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
 for name in SUITES:
