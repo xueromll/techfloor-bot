@@ -54,6 +54,9 @@ const NEVER = 1e12;
 const LOGIN_MINUTES = 10;
 const SESSION_DAYS = 30;
 const SESSION_COOKIE = "session";
+const HINT_HOURS = 48;
+const MOVE_WORDS = /(?<![а-яё])(перелож|перекин|вытащ|вынул)/i;
+const MOVE_HINT = "Переложил чужие вещи? Отметь это в приложении — хозяин узнает, где их искать.";
 
 const LIMITS = {
   state: { limit: 60, seconds: 60, scaled: true },
@@ -66,6 +69,7 @@ const LIMITS = {
   tap: { limit: 20, seconds: 60 },
   problem: { limit: 5, seconds: 3600 },
   ask: { limit: 10, seconds: 3600, scaled: true },
+  hint: { limit: 1, seconds: 600 },
 };
 
 const WALLS = [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11]];
@@ -265,6 +269,9 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS badges (
     chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, badge TEXT NOT NULL, week REAL NOT NULL, value INTEGER NOT NULL,
     PRIMARY KEY (chat_id, user_id, badge, week))`,
+  `CREATE TABLE IF NOT EXISTS hints (
+    chat_id INTEGER NOT NULL, source_id INTEGER NOT NULL, message_id INTEGER NOT NULL, at REAL NOT NULL,
+    PRIMARY KEY (chat_id, source_id))`,
 ];
 
 const MIGRATIONS = [
@@ -301,7 +308,7 @@ const MIGRATIONS = [
 ];
 
 const NUMBERS = WALLS.flat();
-const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings", "room_joins", "room_requests", "blocks", "events", "sessions", "badges"];
+const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings", "room_joins", "room_requests", "blocks", "events", "sessions", "badges", "hints"];
 const UNKNOWN = { id: 0, name: "неизвестно", username: null };
 
 const LEFTOVER = new Set(["done", "parked", "loaded"]);
@@ -1115,6 +1122,7 @@ async function tick(env, chatId = null) {
       env.DB.prepare("DELETE FROM blocks WHERE until IS NOT NULL AND until < ?").bind(t),
       env.DB.prepare("DELETE FROM events WHERE at < ?").bind(t - LOG_DAYS * 86400),
       env.DB.prepare("DELETE FROM sessions WHERE expires_at < ?").bind(t),
+      env.DB.prepare("DELETE FROM hints WHERE at < ?").bind(t - HINT_HOURS * 3600),
     ]);
   }
   if (!playroom(env)) return;
@@ -1479,6 +1487,7 @@ async function onUpdate(update, env, origin) {
     if (answered.text?.includes(PROBLEM_ASK) || answered.text?.startsWith(ANSWER_HEAD)) return problem(env, msg, text);
   }
   if (msg.chat?.type === "private" && msg.from && !msg.text?.startsWith("/") && DM_CONTENT.some((k) => msg[k])) return stray(env, msg);
+  if ((msg.chat?.type === "group" || msg.chat?.type === "supergroup") && !msg.text?.startsWith("/")) return moveHint(env, msg);
   if (typeof msg.text !== "string" || !msg.text.startsWith("/")) return;
   const [command, target] = msg.text.trim().split(/\s+/)[0].split("@");
   if (target && target.toLowerCase() !== (await username(env)).toLowerCase()) return;
@@ -1518,6 +1527,26 @@ async function onUpdate(update, env, origin) {
   else if (command === "/board" || command === "/start") await updatePinned(env, chat.id, command === "/board", thread);
   else if (command === "/unpin") await unpin(env, msg, thread);
   else if (command !== "/problem" && command !== "/status" && command !== "/login" && command !== DONE_COMMAND) await moderate(env, msg, command, thread, anonymousAdmin ? null : msg.from);
+}
+
+async function moveHint(env, msg) {
+  const text = msg.text ?? msg.caption;
+  if (!laundry(env) || !msg.from || msg.from.is_bot || typeof text !== "string" || !MOVE_WORDS.test(text)) return;
+  const chatId = msg.chat.id;
+  if (!(await first(env, "SELECT 1 AS ok FROM boards WHERE chat_id = ?", chatId)) || spend(env, "hint", chatId)) return;
+  const res = await say(env, chatId, MOVE_HINT, {
+    message_thread_id: msg.is_topic_message ? msg.message_thread_id : null,
+    reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
+    reply_markup: { inline_keyboard: [[{ text: "Отметить в приложении", url: await appLink(env, chatId, `m${msg.message_id}`) }]] },
+  });
+  if (!res.ok) return;
+  await env.DB.prepare("INSERT OR REPLACE INTO hints (chat_id, source_id, message_id, at) VALUES (?, ?, ?, ?)")
+    .bind(chatId, msg.message_id, res.result.message_id, now()).run();
+}
+
+async function dropHint(env, chatId, sourceId) {
+  const row = await first(env, "DELETE FROM hints WHERE chat_id = ? AND source_id = ? RETURNING message_id", chatId, sourceId);
+  if (row) await tg(env, "deleteMessage", { chat_id: chatId, message_id: row.message_id });
 }
 
 async function announceDone(env, ownerChat, origin) {
@@ -2124,9 +2153,9 @@ async function identify(request, env) {
   if (raw || !token) {
     const { user, authDate, start: startParam } = await verifyInitData(env, raw);
     if (!(now() - authDate <= INIT_DATA_TTL)) throw new ApiError("Сессия устарела — закрой и открой приложение заново.", 401);
-    const start = startParam.match(/^(-?\d{1,15})(?:_([a-z]))?$/);
+    const start = startParam.match(/^(-?\d{1,15})(?:_([a-z])(\d{1,12})?)?$/);
     if (!start) throw new ApiError("Открой приложение кнопкой из закреплённого сообщения в чате.", 400);
-    return { me: { id: user.id, name: user.first_name, username: user.username ?? null }, chatId: Number(start[1]), tab: start[2] };
+    return { me: { id: user.id, name: user.first_name, username: user.username ?? null }, chatId: Number(start[1]), tab: start[2], hint: Number(start[3] || 0) };
   }
   const ip = clientIp(request, env);
   const retry = full(env, "fail", ip);
@@ -2169,7 +2198,7 @@ async function apiLogout(request, env, url) {
 }
 
 async function authorize(request, env, bucket) {
-  const { me: user, chatId, tab } = await identify(request, env);
+  const { me: user, chatId, tab, hint } = await identify(request, env);
   if (!allowed(env, chatId)) throw new ApiError(FOREIGN_CHAT, 403);
   const rooms = playroom(env);
   const washing = laundry(env);
@@ -2198,6 +2227,7 @@ async function authorize(request, env, bucket) {
   }
   const { inside, admin } = await membership(env, chatId, user.id);
   if (!inside) throw new ApiError("Приложение доступно только участникам чата.", 403);
+  if (hint) await dropHint(env, chatId, hint);
   const me = { ...user };
   me.hidden = await remember(env, chatId, me, mine[0]);
   me.digest = !!mine[0]?.digest;

@@ -147,4 +147,24 @@ if time.time() >= week + 3600:
 else:
     print("(первый час недели — проверку доски пропускаю)")
 sql("UPDATE people SET digest = 0")
+print("--- «переложил» в чате: бот отвечает кнопкой в приложение, не чаще раза в 10 мин; открыли по ней — подсказка удаляется")
+sql("DELETE FROM hints")
+def post(mid, **body): return update({"message": {"message_id": mid, "from": {"id": 2, "first_name": "Боря"}, "chat": {"id": CH, "type": "supergroup"}, **body}})
+before = len(sent())
+post(7001, text="кто-нибудь видел мои носки")
+post(7002, caption="5 стиралка, вещи перекинули", photo=[{"file_id": "x", "file_size": 10}])
+post(7003, text="Вытащил вещи из сушилки 3")
+hints = chat(before)
+assert len(hints) == 1 and hints[0]["text"].startswith("Переложил чужие вещи?"), hints
+url = hints[0]["markup"]["inline_keyboard"][0][0]["url"]
+assert url.endswith(f"?startapp={CH}_m7002"), url
+gone = len(deleted())
+st, d = api(init(2, "Боря", None, start=f"{CH}_m7001")); assert st == 200, d
+st, d = api(init(OUTSIDER_UID, "Чужой", None, start=f"{CH}_m7002")); assert st == 403, d
+assert deleted()[gone:] == [], deleted()[gone:]
+via = init(3, "Вова", "vova", start=f"{CH}_m7002")
+st, d = api(via); assert st == 200, d
+st, d = api(via); assert st == 200, d
+assert deleted()[gone:] == [{"chat_id": CH, "message_id": hints[0]["message_id"]}], deleted()[gone:]
+assert one("SELECT COUNT(*) FROM hints") == 0
 print("HABITS TESTS OK")

@@ -361,6 +361,7 @@ const sheet = document.getElementById("sheet");
 let S = null;
 let tab = "w";
 let section = null;
+let moveTip = /_m\d+$/.test(tg.initDataUnsafe?.start_param || "");
 let roomDay = null;
 let roomMonth = null;
 let skew = 0;
@@ -386,13 +387,13 @@ function el(tag, props, ...children) {
 const now = () => Date.now() / 1000 + skew;
 function who(p) {
   const text = p.username ? "@" + p.username : p.name;
-  if (!p.id || isMe(p)) return text;
-  const href = p.username ? `https://t.me/${p.username}` : `tg://user?id=${p.id}`;
-  return el("a", { class: "who", href, target: p.username ? "_blank" : null, rel: "noopener", onclick: (e) => openProfile(e, href) }, text);
+  if (!p.id || !p.username || isMe(p)) return text;
+  const href = `https://t.me/${p.username}`;
+  return el("a", { class: "who", href, target: "_blank", rel: "noopener", onclick: (e) => openProfile(e, href) }, text);
 }
 function openProfile(e, href) {
   e.stopPropagation();
-  if (web || !href.startsWith("https:") || !tg.openTelegramLink) return;
+  if (web || !tg.openTelegramLink) return;
   e.preventDefault();
   tg.openTelegramLink(href);
 }
@@ -671,7 +672,9 @@ async function act(body, done) {
   if (busy) return;
   busy = true;
   try {
-    setState(await api("/api/action", body));
+    const next = await api("/api/action", body);
+    if (body.action === "move" || body.action === "load") moveTip = false;
+    setState(next);
     closeSheet();
     if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
     if (done) warn(done);
@@ -1031,6 +1034,15 @@ function guideCard(kind) {
     el("div", { class: "row" }, el("h2", { style: "margin:0" }, "Первый раз здесь?"), el("button", { class: "x", onclick: () => { markGuide(kind); render(); } }, "Скрыть")),
     el("p", { class: "hint", style: "margin:6px 0 0" }, GUIDES[kind].pitch),
     btn("Как пользоваться", GUIDES[kind].open));
+}
+
+function moveTipCard() {
+  if (!moveTip) return null;
+  return el("section", { class: "card guide" },
+    el("div", { class: "row" }, el("h2", { style: "margin:0" }, "Переложил чужие вещи?"), el("button", { class: "x", onclick: () => { moveTip = false; render(); } }, "Скрыть")),
+    el("p", { class: "hint", style: "margin:6px 0 0" },
+      "Нажми на машину, откуда достал вещи, и выбери «Вещи переложены — указать куда». " +
+      "Если она здесь свободна, нажми на машину, куда положил вещи, и выбери «Тут чужие вещи, без программы»."));
 }
 
 function guideBubble(text) {
@@ -1631,6 +1643,7 @@ function laundryView() {
       guideHead("laundry", "Прачечная"),
       el("div", { class: "hint" }, "Свободно: " + counts.join(", "))),
     guideCard("laundry"),
+    moveTipCard(),
     el("div", { class: "tabs" }, Object.entries(S.types).map(([t, cfg]) =>
       el("button", { class: t === tab ? "tab on" : "tab", onclick: () => { tab = t; render(); } }, cfg.title))),
     gridCard(),
