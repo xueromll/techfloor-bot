@@ -5,6 +5,9 @@ db = start()
 wipe()
 sql("UPDATE people SET hidden = 0")
 
+def keys(msg): return [b["callback_data"] for row in (msg.get("markup") or {}).get("inline_keyboard", []) for b in row if "callback_data" in b]
+def press(data, uid): return update({"callback_query": {"id": "cb5", "data": data, "from": {"id": uid, "first_name": "X"}, "message": {"message_id": 600, "chat": {"id": CH, "type": "supergroup"}}}})
+
 print("--- programme ends -> 'done', not free; next booker waits")
 api(ANYA, {"action": "take", "t": "w", "n": 3, "time": "40"})
 st, d = api(BORYA, {"action": "next", "t": "w", "n": 3}); assert st == 200, d
@@ -49,11 +52,39 @@ sql("UPDATE machines SET warned = 0 WHERE mtype='w' AND num = 7"); cron()
 assert len([x for x in sent()[before:] if x["chat_id"] == CH]) == 2, sent()[before:]
 sql("UPDATE machines SET ends_at = ? WHERE mtype='w' AND num IN (6, 7, 8)", time.time() - 1); cron()
 st, d = api(VOVA); assert m(d, "w", 7)["status"] == "done" and m(d, "w", 8)["status"] == "done", d
+last = {x["message_id"]: x for x in edits()[edited:]}
+assert "Стиралка 7 закончила" in last[warns[7]]["text"] and "@vova" in last[warns[7]]["text"] and not last[warns[7]]["markup"], last
+assert "Стиралка 8 закончила" in last[warns[8]]["text"] and "Хозяин вещей не отмечен" in last[warns[8]]["text"], last
+assert keys(last[warns[8]]) == [f"lc:{CH}:w:8:" + keys(last[warns[8]])[0].split(":", 4)[4]], last
 st, d = api(GALYA, {"action": "move", "ft": "w", "fn": 8, "to": "board"}); assert st == 200, d
 assert len([x for x in sent()[before:] if x["chat_id"] == CH]) == 2, sent()[before:]
-last = {x["message_id"]: x["text"] for x in edits()[edited:]}
-assert "Стиралка 7 закончила" in last[warns[7]] and "@vova" in last[warns[7]], last
-assert "Стиралка 8 закончила" in last[warns[8]] and "Хозяин вещей не отмечен" in last[warns[8]], last
+moved = [x for x in edits() if x["message_id"] == warns[8]][-1]; assert "переложили" in moved["text"] and not moved["markup"], moved
+print("--- «Это мои вещи» под сообщением без хозяина: нажал — стал хозяином, кнопка пропала")
+wipe("machines")
+api(BORYA, {"action": "take", "t": "w", "n": 9, "time": "40", "owner": "unknown"})
+api(BORYA, {"action": "take", "t": "w", "n": 10, "time": "40", "owner": "unknown"})
+api(GALYA, {"action": "take", "t": "w", "n": 11, "time": "40"})
+sql("UPDATE machines SET started_at = ?, ends_at = ? WHERE mtype='w' AND num IN (9, 10, 11)", time.time() - 3600, time.time() + 5 * 60)
+before = len(sent()); cron()
+said = {x["text"].split(" закончит")[0]: x for x in sent()[before:] if x["chat_id"] == CH}
+assert set(said) == {"Стиралка 9", "Стиралка 10"} and all(len(keys(x)) == 1 and keys(x)[0].startswith("lc:") for x in said.values()), said
+w9, w10 = keys(said["Стиралка 9"])[0], keys(said["Стиралка 10"])[0]
+edited = len(edits())
+st, d = press(w9, 3); assert st == 200, d
+st, d = api(GALYA); assert m(d, "w", 9)["owner"]["id"] == 3, m(d, "w", 9)
+got = [x for x in edits()[edited:] if x["message_id"] == said["Стиралка 9"]["message_id"]]; assert len(got) == 1 and "нашёлся" in got[0]["text"] and not got[0]["markup"], got
+press(w9, 1)
+st, d = api(GALYA); assert m(d, "w", 9)["owner"]["id"] == 3, m(d, "w", 9)
+print("--- хозяин нашёлся через приложение — кнопка тоже пропадает, после конца программы не возвращается")
+edited = len(edits())
+st, d = api(ANYA, {"action": "claim", "t": "w", "n": 10}); assert m(d, "w", 10)["owner"]["id"] == 1, m(d, "w", 10)
+got = [x for x in edits()[edited:] if x["message_id"] == said["Стиралка 10"]["message_id"]]; assert len(got) == 1 and not got[0]["markup"], got
+sql("UPDATE machines SET ends_at = ? WHERE mtype='w' AND num IN (9, 10)", time.time() - 1); cron()
+assert all(not x["markup"] for x in edits()[edited:] if "Стиралка" in x["text"]), edits()[edited:]
+print("--- старая кнопка на уже неактуальной машине ничего не ломает")
+api(ANYA, {"action": "free", "t": "w", "n": 10})
+st, d = press(w10, 2); assert st == 200, d
+st, d = api(BORYA); assert m(d, "w", 10)["status"] != "done" or m(d, "w", 10)["owner"]["id"] != 2, m(d, "w", 10)
 print("--- вещи внутри, программу не запускали -> машина занята без таймера")
 wipe()
 st, d = api(BORYA, {"action": "load", "t": "w", "n": 6}); assert st == 200, d

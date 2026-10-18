@@ -1,4 +1,4 @@
-import glob, hashlib, hmac, json, random, sqlite3, sys, threading, time, urllib.request, urllib.error
+import glob, hashlib, hmac, json, os, random, sqlite3, sys, tempfile, threading, time, urllib.request, urllib.error
 from urllib.parse import urlencode
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -18,6 +18,7 @@ OUTSIDER_UID = 9
 FRESH_UID = 100000
 BAD_THREAD = 999
 CRON_TIMEOUT = 20
+STATE = os.path.join(tempfile.gettempdir(), "techfloor-test")
 
 db = None
 updates = [1000]
@@ -69,7 +70,7 @@ def tap(bid, what, uid):
 def connect():
     global db
     if db is None:
-        path = [p for p in glob.glob(".wrangler/state/v3/d1/**/*.sqlite", recursive=True) if "metadata" not in p][0]
+        path = [p for p in glob.glob(os.path.join(STATE, "v3", "d1", "**", "*.sqlite"), recursive=True) if "metadata" not in p][0]
         db = sqlite3.connect(path, timeout=15)
     return db
 

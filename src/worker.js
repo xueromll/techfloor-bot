@@ -739,11 +739,12 @@ async function notice(env, chatId, p, text, buttons = []) {
 }
 
 async function warnChat(env, row, text) {
+  const extra = row.user_id ? {} : { reply_markup: { inline_keyboard: claimButtons(row) } };
   if (row.warn_msg) {
-    const res = await tg(env, "editMessageText", { chat_id: row.chat_id, message_id: row.warn_msg, text, parse_mode: "HTML" });
+    const res = await tg(env, "editMessageText", { chat_id: row.chat_id, message_id: row.warn_msg, text, parse_mode: "HTML", ...extra });
     if (res.ok || /not modified/i.test(res.description || "")) return;
   }
-  const sent = await say(env, row.chat_id, text);
+  const sent = await say(env, row.chat_id, text, extra);
   if (!sent.ok) return;
   await env.DB.prepare("UPDATE machines SET warn_msg = ? WHERE chat_id = ? AND mtype = ? AND num = ? AND started_at = ?")
     .bind(sent.result.message_id, row.chat_id, row.mtype, row.num, row.started_at).run();
@@ -755,8 +756,16 @@ async function nudge(env, chatId, from, p, text) {
   await notice(env, chatId, p, text);
 }
 
+function machineRef(row) {
+  return `${row.chat_id}:${row.mtype}:${row.num}:${row.started_at}`;
+}
+
+function claimButtons(row) {
+  return [[{ text: "Это мои вещи", callback_data: `lc:${machineRef(row)}` }]];
+}
+
 function pickupButtons(row) {
-  const id = `${row.chat_id}:${row.mtype}:${row.num}:${row.started_at}`;
+  const id = machineRef(row);
   return [
     [{ text: "Вещи забраны", callback_data: `lp:${id}` }],
     [{ text: `Через ${SNOOZE_MINUTES} мин`, callback_data: `lz:${id}` }, { text: "Можно переложить", callback_data: `lm:${id}` }],
@@ -834,7 +843,7 @@ async function remind(env, row, t) {
 }
 
 async function settleChat(env, row, text) {
-  if (row.called && row.warn_msg) await tg(env, "editMessageText", { chat_id: row.chat_id, message_id: row.warn_msg, text, parse_mode: "HTML" });
+  if (row.warn_msg && (row.called || !row.user_id)) await tg(env, "editMessageText", { chat_id: row.chat_id, message_id: row.warn_msg, text, parse_mode: "HTML" });
 }
 
 async function busyMap(env, chatId) {
@@ -1756,6 +1765,29 @@ async function pickupTap(env, cq, what, chatId, mtype, num, started) {
   await tapRewrite(env, cq, "Готово — следующему можно переложить твои вещи. Напишу, куда их положили.");
 }
 
+async function claimTap(env, cq, chatId, mtype, num, started) {
+  const row = laundry(env) && allowed(env, chatId) ? await getMachine(env, chatId, mtype, num) : null;
+  const drop = () => cq.message && tg(env, "editMessageReplyMarkup", { chat_id: cq.message.chat.id, message_id: cq.message.message_id });
+  if (!row || row.started_at !== started || row.user_id) {
+    await tapAnswer(env, cq, row?.user_id === cq.from.id ? "Ты уже отмечен хозяином." : row?.user_id ? "У этих вещей уже есть хозяин." : "Уже неактуально.");
+    await drop();
+    return;
+  }
+  const block = activeBlock(chatId, cq.from.id) ??
+    (await first(env, "SELECT until, reason FROM blocks WHERE chat_id = ? AND user_id = ? AND (until IS NULL OR until > ?)", chatId, cq.from.id, now()));
+  if (block) {
+    await tapAnswer(env, cq, blockedText(env, block));
+    return;
+  }
+  const error = await perform(env, chatId, await tapActor(env, chatId, cq.from), false, { action: "claim", t: mtype, n: num });
+  if (error) {
+    await tapAnswer(env, cq, error);
+    return;
+  }
+  await updatePinned(env, chatId);
+  await tapAnswer(env, cq, row.kind === "run" ? "Записал. Напишу, когда закончит." : "Записал. Забери, пожалуйста, вещи.");
+}
+
 async function digestTap(env, cq, what, chatId) {
   const on = what === "1" ? 1 : 0;
   await env.DB.prepare("UPDATE people SET digest = ?, digest_asked = 1 WHERE chat_id = ? AND user_id = ?").bind(on, chatId, cq.from.id).run();
@@ -1772,6 +1804,8 @@ async function onCallback(env, cq) {
   if (!cq.from || spend(env, "tap", cq.from.id)) return;
   const data = String(cq.data || "");
   const pickup = data.match(/^l([pzm]):(-?\d+):([wd]):(\d+):(\d+(?:\.\d+)?)$/);
+  const claim = data.match(/^lc:(-?\d+):([wd]):(\d+):(\d+(?:\.\d+)?)$/);
+  if (claim) return claimTap(env, cq, Number(claim[1]), claim[2], Number(claim[3]), Number(claim[4]));
   if (pickup) return pickupTap(env, cq, pickup[1], Number(pickup[2]), pickup[3], Number(pickup[4]), Number(pickup[5]));
   const evening = data.match(/^d([10x]):(-?\d+)$/);
   if (evening) return digestTap(env, cq, evening[1], Number(evening[2]));
@@ -2650,6 +2684,9 @@ const ACTIONS = {
       me.id, me.name, me.username, chatId, mtype, num
     );
     if (!ok) return "У этой машины уже есть хозяин.";
+    if (row.warn_msg) {
+      await tg(env, "editMessageText", { chat_id: chatId, message_id: row.warn_msg, text: `${mname(mtype, num)}: хозяин вещей нашёлся.`, parse_mode: "HTML" });
+    }
     if (row.reporter_id && row.reporter_id !== me.id) {
       await nudge(env, chatId, me, person(row, "reporter"), `в ${MACHINES[mtype].prep} ${num}, которую ты отметил, нашёлся хозяин вещей. Кто: ${await label(env, chatId, me)}.`);
     }

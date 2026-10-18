@@ -4,7 +4,7 @@
   "scripts": {
     "build": "python build.py",
     "deploy": "wrangler deploy",
-    "test:server": "cd tests && wrangler dev --local --test-scheduled --port 8787 --ip 127.0.0.1",
+    "test:server": "python tests/server.py",
     "test": "python tests/all.py"
   },
   "devDependencies": {
