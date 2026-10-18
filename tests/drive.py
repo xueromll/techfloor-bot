@@ -69,16 +69,18 @@ wipe()
 st, d = api(GALYA); slots = d["slots"]
 st, d = api(GALYA, {"action": "book", "t": "w", "at": slots[-1], "n": 4}); assert st == 200, d
 st, d = api(BORYA, {"action": "take", "t": "w", "n": 4, "time": "60"}); assert st == 200, d
-st, d = api(VOVA, {"action": "next", "t": "w", "n": 4}); assert st == 200, d
+nexter_uid, nexter = fresh("Следующий")
+st, d = api(nexter, {"action": "next", "t": "w", "n": 4}); assert st == 200, d
 st, d = api(BORYA, {"action": "broken", "t": "w", "n": 4}); assert "только админы" in err(d), d
 before = len(sent())
 st, d = api(ANYA, {"action": "broken", "t": "w", "n": 4, "note": "  не сливает   воду "}); assert st == 200, d
 w4 = m(d, "w", 4); assert w4["status"] == "broken" and w4["note"] == "не сливает воду" and "next" not in w4, w4
-assert [x for x in d["machines"] if x["status"] == "hold" and x["owner"]["id"] == 3], "Вова не получил другую стиралку"
+assert [x for x in d["machines"] if x["status"] == "hold" and x["owner"]["id"] == nexter_uid], "следующий не получил другую стиралку"
 assert [b["n"] for b in d["bookings"] if b["user"]["id"] == 4] == [None], d["bookings"]
 texts = [x["text"] for x in sent()[before:]]
 assert any("Стиралка 4 сломалась" in t and "забери" in t for t in texts), texts
 assert any("начало очереди" in t for t in texts) and any("любая свободная стиралка" in t for t in texts), texts
+assert not [x for x in sent()[before:] if x["chat_id"] == CH], sent()[before:]
 assert "Не работают: стиралка 4." in one("SELECT text FROM boards WHERE chat_id = ?", CH)
 st, d = api(ANYA, {"action": "broken", "t": "w", "n": 4}); assert "уже отмечена" in err(d), d
 for extra in ({"action": "take", "time": "30"}, {"action": "load"}, {"action": "next"}, {"action": "claim"}, {"action": "free"}):
@@ -111,6 +113,10 @@ _, third = fresh("Третий")
 st, d = api(third, {"action": "retime", "t": "w", "n": 1, "time": "30"}); assert st == 200 and m(d, "w", 1)["edits"] == 3, d
 _, fourth = fresh("Четвёртый")
 st, d = api(fourth, {"action": "retime", "t": "w", "n": 1, "time": "35"}); assert "уже исправили 3 человека" in err(d), d
+print("--- сушилка с датчиком закончила раньше: сократить время может любой, сколько угодно")
+st, d = api(BORYA, {"action": "take", "t": "d", "n": 3, "time": "180"}); assert st == 200, d
+st, d = api(GALYA, {"action": "retime", "t": "d", "n": 3, "time": "17"}); assert st == 200, d
+assert abs(m(d, "d", 3)["ends"] - time.time() - 17 * 60) < 30, m(d, "d", 3)
 print("--- кто запустил, исправляет сколько угодно (в пределах ±60 мин), админ — без ограничений")
 for minutes in ("45", "50"):
     st, d = api(BORYA, {"action": "retime", "t": "w", "n": 1, "time": minutes}); assert st == 200, d

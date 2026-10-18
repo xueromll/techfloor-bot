@@ -26,7 +26,7 @@ const AUTH_CACHE_SECONDS = 300;
 const AUTH_CACHE_MAX = 200;
 const SWEEP_SECONDS = 600;
 const RECENT_SECONDS = 120;
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 const ROOM_USER_BOOKINGS = 3;
 const INIT_DATA_MAX = 4096;
 const API_BODY_MAX = 8 * 1024;
@@ -163,7 +163,7 @@ const SCHEMA = [
     user_id INTEGER NOT NULL, user_name TEXT NOT NULL, username TEXT,
     started_at REAL NOT NULL, ends_at REAL NOT NULL, kind TEXT NOT NULL DEFAULT 'run', warned INTEGER NOT NULL DEFAULT 0,
     reporter_id INTEGER, reporter_name TEXT, reporter_username TEXT, finished_at REAL, note TEXT,
-    planned_at REAL, editors TEXT, editor_id INTEGER, editor_name TEXT, editor_username TEXT,
+    planned_at REAL, editors TEXT, editor_id INTEGER, editor_name TEXT, editor_username TEXT, warn_msg INTEGER,
     PRIMARY KEY (chat_id, mtype, num))`,
   `CREATE TABLE IF NOT EXISTS boards (chat_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL, text TEXT, thread_id INTEGER)`,
   `CREATE TABLE IF NOT EXISTS queue (
@@ -238,6 +238,7 @@ const MIGRATIONS = [
   "ALTER TABLE machines ADD COLUMN editor_id INTEGER",
   "ALTER TABLE machines ADD COLUMN editor_name TEXT",
   "ALTER TABLE machines ADD COLUMN editor_username TEXT",
+  "ALTER TABLE machines ADD COLUMN warn_msg INTEGER",
 ];
 
 const NUMBERS = WALLS.flat();
@@ -628,32 +629,46 @@ async function setDm(env, userId, ok) {
   await env.DB.prepare("INSERT OR REPLACE INTO dm (user_id, ok) VALUES (?, ?)").bind(userId, ok ? 1 : 0).run();
 }
 
-async function mention(env, chatId, p, text, table = "boards") {
+async function mentionText(env, chatId, p, text) {
   const who = (await isHidden(env, chatId, p.id)) ? `<a href="tg://user?id=${p.id}">${ANONYMOUS}</a>` : tag(p);
-  await say(env, chatId, `${who}, ${text}`, {}, table);
+  return `${who}, ${text}`;
+}
+
+async function mention(env, chatId, p, text, table = "boards") {
+  await say(env, chatId, await mentionText(env, chatId, p, text), {}, table);
 }
 
 async function notice(env, chatId, p, text) {
-  if (!p || !p.id) return;
+  if (!p || !p.id) return false;
   const markup = { inline_keyboard: [[{ text: "Открыть прачечную", url: await appLink(env, chatId) }]] };
   const dm = await tg(env, "sendMessage", { chat_id: p.id, text: capitalize(text), parse_mode: "HTML", reply_markup: markup });
   if (dm.ok) {
     await setDm(env, p.id, true);
-    return;
+    return true;
   }
   if (dm.error_code === 403 || /chat not found/i.test(dm.description || "")) await setDm(env, p.id, false);
-  await mention(env, chatId, p, text);
+  return false;
+}
+
+async function machineText(env, row, text, unknownText) {
+  return row.user_id ? mentionText(env, row.chat_id, person(row), text) : unknownText;
+}
+
+async function warnChat(env, row, text) {
+  if (row.warn_msg) {
+    const res = await tg(env, "editMessageText", { chat_id: row.chat_id, message_id: row.warn_msg, text, parse_mode: "HTML" });
+    if (res.ok || /not modified/i.test(res.description || "")) return;
+  }
+  const sent = await say(env, row.chat_id, text);
+  if (!sent.ok) return;
+  await env.DB.prepare("UPDATE machines SET warn_msg = ? WHERE chat_id = ? AND mtype = ? AND num = ? AND started_at = ?")
+    .bind(sent.result.message_id, row.chat_id, row.mtype, row.num, row.started_at).run();
 }
 
 async function nudge(env, chatId, from, p, text) {
   if (!p || !p.id) return;
   if (p.id !== from.id && spend(env, "nudge", `${from.id}:${p.id}`)) return;
   await notice(env, chatId, p, text);
-}
-
-async function noticeMachine(env, row, text, unknownText) {
-  if (row.user_id) await notice(env, row.chat_id, person(row), text);
-  else await say(env, row.chat_id, unknownText);
 }
 
 async function busyMap(env, chatId) {
@@ -808,12 +823,10 @@ async function tickLaundry(env, t, chatId) {
         row.chat_id, row.mtype, row.num, row.started_at
       );
       if (!ok) continue;
-      await noticeMachine(
-        env,
-        row,
-        `${mname(row.mtype, row.num)} закончит через ${left} мин.`,
-        `${mname(row.mtype, row.num)} закончит через ${left} мин. Хозяин вещей не отмечен.`
-      );
+      const soon = `${mname(row.mtype, row.num)} закончит через ${left} мин.`;
+      if (!(await notice(env, row.chat_id, person(row), soon))) {
+        await warnChat(env, row, await machineText(env, row, soon, `${soon} Хозяин вещей не отмечен.`));
+      }
       const nxt = await first(env, "SELECT * FROM nexts WHERE chat_id = ? AND mtype = ? AND num = ?", row.chat_id, row.mtype, row.num);
       if (nxt) await notice(env, row.chat_id, person(nxt), `${mname(row.mtype, row.num)} освободится через ${left} мин — она забронирована за тобой.`);
     }
@@ -829,12 +842,12 @@ async function tickLaundry(env, t, chatId) {
       if (!finished) continue;
       dirty.add(row.chat_id);
       await audit(env, row.chat_id, "finished", null, machineTrail(row));
-      await noticeMachine(
-        env,
-        row,
-        `${mname(row.mtype, row.num)} закончила — забери бельё и отметь в приложении «Вещи забраны».`,
-        `${mname(row.mtype, row.num)} закончила. Хозяин вещей не отмечен — если это твои вещи, забери их.`
-      );
+      const done = `${mname(row.mtype, row.num)} закончила — забери бельё и отметь в приложении «Вещи забраны».`;
+      await notice(env, row.chat_id, person(row), done);
+      if (row.warn_msg) {
+        const text = await machineText(env, row, done, `${mname(row.mtype, row.num)} закончила. Хозяин вещей не отмечен — если это твои вещи, забери их.`);
+        await tg(env, "editMessageText", { chat_id: row.chat_id, message_id: row.warn_msg, text, parse_mode: "HTML" });
+      }
       continue;
     }
     const ok = await changed(
@@ -848,12 +861,7 @@ async function tickLaundry(env, t, chatId) {
     if (row.kind === "hold") {
       await notice(env, row.chat_id, person(row), `время вышло — ${mname(row.mtype, row.num)} передана дальше.`);
     } else if (row.kind === "loaded") {
-      await noticeMachine(
-        env,
-        row,
-        `${mname(row.mtype, row.num)} больше ${CLOTHES_HOURS} ч стояла с твоими вещами — отметка снята, машина снова свободна.`,
-        `${mname(row.mtype, row.num)} больше ${CLOTHES_HOURS} ч стояла с вещами без программы — отметка снята, машина снова свободна.`
-      );
+      await notice(env, row.chat_id, person(row), `${mname(row.mtype, row.num)} больше ${CLOTHES_HOURS} ч стояла с твоими вещами — отметка снята, машина снова свободна.`);
     }
     await handoff(env, row.chat_id, row.mtype, row.num);
   }
@@ -2182,7 +2190,7 @@ const ACTIONS = {
     if (row.kind === "broken") return `${mname(mtype, num)} отмечена сломанной — когда её починят, админ снимет отметку.`;
     Object.assign(trail, machineTrail(row));
     const marked = row.kind === "run" && row.reporter_id != null;
-    if (!admin && (marked ? row.reporter_id !== me.id : row.user_id !== me.id && row.reporter_id !== me.id)) {
+    if (!admin && !LEFTOVER.has(row.kind) && (marked ? row.reporter_id !== me.id : row.user_id !== me.id && row.reporter_id !== me.id)) {
       return marked
         ? "Пока программа идёт, освободить может только тот, кто отметил машину, или админ чата."
         : "Освободить может хозяин вещей, тот, кто отметил машину, или админ чата.";
@@ -2192,10 +2200,13 @@ const ACTIONS = {
     }
     if (row.kind === "parked") {
       await env.DB.prepare("DELETE FROM moved WHERE chat_id = ? AND to_mtype = ? AND to_num = ? AND owner_id = ?").bind(chatId, mtype, num, row.user_id).run();
-    } else {
-      const text = `${MACHINES[mtype].acc} ${num} освободили. Кто: ${await label(env, chatId, me)}.`;
-      if (row.user_id && row.user_id !== me.id) await nudge(env, chatId, me, person(row), text);
-      if (row.reporter_id && row.reporter_id !== me.id && row.reporter_id !== row.user_id) await nudge(env, chatId, me, person(row, "reporter"), text);
+    }
+    if (row.user_id && row.user_id !== me.id) {
+      const who = await label(env, chatId, me);
+      const text = LEFTOVER.has(row.kind)
+        ? `вещи из ${MACHINES[mtype].gen} ${num} отметили забранными. Кто: ${who}.`
+        : `${MACHINES[mtype].acc} ${num} освободили. Кто: ${who}.`;
+      await nudge(env, chatId, me, person(row), text);
     }
     await handoff(env, chatId, mtype, num);
     return null;
@@ -2304,9 +2315,7 @@ const ACTIONS = {
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).bind(chatId, ownerP.id, ownerP.name, ownerP.username ?? null, ...src, dest ? dest[0] : null, dest ? dest[1] : null, me.id, me.name, me.username ?? null, now()).run();
     const where = dest ? `в ${capitalize(MACHINES[dest[0]].acc)} ${dest[1]}` : "на гладильную доску";
-    if (!ownerP.id) {
-      await say(env, chatId, `Вещи из ${MACHINES[src[0]].gen} ${src[1]} переложили ${where}. Хозяин вещей не отмечен — если это твои вещи, забери их там.`);
-    } else if (ownerP.id !== me.id) {
+    if (ownerP.id && ownerP.id !== me.id) {
       await nudge(
         env,
         chatId,
@@ -2400,11 +2409,11 @@ const ACTIONS = {
     if (!unlimited && editors.includes(me.id)) return `Ты уже исправлял время на этой программе. Ещё раз может только тот, кто запустил машину, или админ чата.`;
     if (!unlimited && editors.length >= TIMER_EDITS) return `Время на ${name} уже исправили ${TIMER_EDITS} человека — дальше может только тот, кто запустил машину, или админ чата.`;
     const planned = row.planned_at ?? row.ends_at;
-    const lo = admin ? 1 : Math.max(1, Math.ceil((planned - TIMER_SHIFT_MINUTES * 60 - t) / 60));
+    const lo = 1;
     const hi = admin ? MAX_MINUTES : Math.floor((Math.min(planned + TIMER_SHIFT_MINUTES * 60, row.started_at + MAX_MINUTES * 60) - t) / 60);
     if (hi < lo) return `Время на ${name} уже нельзя исправить — напиши админу чата.`;
     if (minutes < lo || minutes > hi) {
-      return `Можно поставить от ${lo} до ${hi} мин: время меняется не больше чем на ${TIMER_SHIFT_MINUTES} мин от изначального (до ${clock(env, planned)}).`;
+      return `Можно поставить от ${lo} до ${hi} мин: сократить время можно сколько угодно, продлить — не больше чем на ${TIMER_SHIFT_MINUTES} мин от изначального (до ${clock(env, planned)}).`;
     }
     const ends = t + minutes * 60;
     if (Math.round((ends - row.ends_at) / 60) === 0) return `${name} и так закончит в ${clock(env, row.ends_at)}.`;
@@ -2423,7 +2432,6 @@ const ACTIONS = {
     const booked = await upcomingBooking(env, chatId, mtype, num, row.user_id);
     const told = new Map();
     if (row.user_id) told.set(row.user_id, person(row));
-    if (row.reporter_id != null) told.set(row.reporter_id, person(row, "reporter"));
     if (nxt) told.set(nxt.user_id, person(nxt));
     if (booked && booked.at < ends) told.set(booked.user_id, person(booked));
     told.delete(me.id);

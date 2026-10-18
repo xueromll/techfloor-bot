@@ -11,9 +11,10 @@ st, d = api(BORYA, {"action": "next", "t": "w", "n": 3}); assert st == 200, d
 sql("UPDATE machines SET ends_at = ? WHERE mtype='w' AND num=3", time.time() - 1); cron()
 st, d = api(BORYA); w3 = m(d, "w", 3); assert w3["status"] == "done" and w3["owner"]["id"] == 1 and w3["finished"], w3
 st, d = api(VOVA, {"action": "take", "t": "w", "n": 3, "time": "30"}); assert "чужие вещи" in err(d), d
-print("--- owner taps «Вещи забраны» -> booker gets it")
-st, d = api(BORYA, {"action": "free", "t": "w", "n": 3}); assert "Освободить может" in err(d), d
-st, d = api(ANYA, {"action": "free", "t": "w", "n": 3}); w3 = m(d, "w", 3); assert w3["status"] == "hold" and w3["owner"]["id"] == 2, w3
+print("--- кто угодно может нажать «Вещи забраны»: хозяину уведомление, машина уходит забронировавшему")
+before = len(sent())
+st, d = api(BORYA, {"action": "free", "t": "w", "n": 3}); w3 = m(d, "w", 3); assert w3["status"] == "hold" and w3["owner"]["id"] == 2, w3
+assert [x for x in sent()[before:] if x["chat_id"] == 1 and "отметили забранными" in x["text"]], sent()[before:]
 print("--- someone moves clothes from a done machine -> freed + DM + queue")
 api(GALYA, {"action": "take", "t": "w", "n": 5, "time": "40"})
 sql("UPDATE machines SET ends_at = ? WHERE mtype='w' AND num=5", time.time() - 1); cron()
@@ -32,13 +33,27 @@ st, d = api(GALYA, {"action": "claim", "t": "d", "n": 4}); assert m(d, "d", 4)["
 print("--- 12h later a forgotten done machine frees itself silently")
 sql("UPDATE machines SET ends_at = ? WHERE mtype='d' AND num=4", time.time() - 1); cron()
 st, d = api(ANYA); assert m(d, "d", 4)["status"] == "free", m(d, "d", 4)
-print("--- unknown owner's clothes moved -> chat is told where they went")
+print("--- в общий чат идёт только предупреждение «скоро закончит» (хозяин не отмечен или личка закрыта), потом оно правится на «закончила»")
+before, edited = len(sent()), len(edits())
 api(BORYA, {"action": "take", "t": "w", "n": 8, "time": "40", "owner": "unknown"})
-sql("UPDATE machines SET ends_at = ? WHERE mtype='w' AND num=8", time.time() - 1); cron()
-before = len(sent())
-st, d = api(VOVA, {"action": "move", "ft": "w", "fn": 8, "to": "board"}); assert st == 200, d
-said = [x for x in sent()[before:] if x["chat_id"] == CH and "переложили на гладильную доску" in x["text"]]
-assert len(said) == 1 and "Стиралки 8" in said[0]["text"] and "Хозяин вещей не отмечен" in said[0]["text"], sent()[before:]
+api(VOVA, {"action": "take", "t": "w", "n": 7, "time": "40"})
+api(GALYA, {"action": "take", "t": "w", "n": 6, "time": "40"})
+sql("UPDATE machines SET started_at = ?, ends_at = ? WHERE mtype='w' AND num IN (6, 7, 8)", time.time() - 3600, time.time() + 5 * 60); cron()
+said = [x for x in sent()[before:] if x["chat_id"] == CH]
+assert len(said) == 2, said
+assert any("Стиралка 8 закончит через" in x["text"] and "Хозяин вещей не отмечен" in x["text"] for x in said), said
+assert any("@vova" in x["text"] and "Стиралка 7 закончит через" in x["text"] for x in said), said
+warns = {n: one("SELECT warn_msg FROM machines WHERE mtype = 'w' AND num = ?", n) for n in (6, 7, 8)}
+assert warns[6] is None and warns[7] and warns[8], warns
+sql("UPDATE machines SET warned = 0 WHERE mtype='w' AND num = 7"); cron()
+assert len([x for x in sent()[before:] if x["chat_id"] == CH]) == 2, sent()[before:]
+sql("UPDATE machines SET ends_at = ? WHERE mtype='w' AND num IN (6, 7, 8)", time.time() - 1); cron()
+st, d = api(VOVA); assert m(d, "w", 7)["status"] == "done" and m(d, "w", 8)["status"] == "done", d
+st, d = api(GALYA, {"action": "move", "ft": "w", "fn": 8, "to": "board"}); assert st == 200, d
+assert len([x for x in sent()[before:] if x["chat_id"] == CH]) == 2, sent()[before:]
+last = {x["message_id"]: x["text"] for x in edits()[edited:]}
+assert "Стиралка 7 закончила" in last[warns[7]] and "@vova" in last[warns[7]], last
+assert "Стиралка 8 закончила" in last[warns[8]] and "Хозяин вещей не отмечен" in last[warns[8]], last
 print("--- вещи внутри, программу не запускали -> машина занята без таймера")
 wipe()
 st, d = api(BORYA, {"action": "load", "t": "w", "n": 6}); assert st == 200, d
@@ -77,11 +92,19 @@ st, d = api(GALYA); assert m(d, "w", 2)["status"] == "run", m(d, "w", 2)
 before = len(sent())
 st, d = api(BORYA, {"action": "free", "t": "w", "n": 2}); assert m(d, "w", 2)["status"] == "free", m(d, "w", 2)
 assert [x for x in sent()[before:] if x["chat_id"] == 4 and "освободили" in x["text"]], sent()[before:]
+print("--- отметивший чужую стирку не получает уведомлений об исправленном времени и освобождении")
+wipe("machines")
+api(BORYA, {"action": "take", "t": "w", "n": 5, "time": "40", "owner": "unknown"})
+before = len(sent())
+st, d = api(VOVA, {"action": "retime", "t": "w", "n": 5, "time": "45"}); assert st == 200, d
+st, d = api(ANYA, {"action": "free", "t": "w", "n": 5}); assert m(d, "w", 5)["status"] == "free", m(d, "w", 5)
+assert [x for x in sent()[before:] if x["chat_id"] == 2] == [], sent()[before:]
 print("--- «Не знаю чьи» не перезаписывает чужую отметку")
 st, d = api(BORYA, {"action": "load", "t": "w", "n": 4}); assert st == 200, d
 st, d = api(GALYA, {"action": "take", "t": "w", "n": 4, "time": "40", "owner": "unknown"}); assert "чужие вещи" in err(d), d
-st, d = api(GALYA, {"action": "free", "t": "w", "n": 4}); assert "Освободить может" in err(d), d
 st, d = api(GALYA); w4 = m(d, "w", 4); assert w4["status"] == "loaded" and w4["reporter"]["id"] == 2, w4
+print("--- вещи без программы забрали — отметку снимает любой")
+st, d = api(GALYA, {"action": "free", "t": "w", "n": 4}); assert m(d, "w", 4)["status"] == "free", m(d, "w", 4)
 print("--- /status в личке: что свободно, что работает и что твоё")
 wipe()
 api(ANYA, {"action": "take", "t": "w", "n": 1, "time": "40"})
