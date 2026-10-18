@@ -101,7 +101,7 @@ const PROBLEM_ASK = "Опиши проблему одним сообщением
 const PROBLEM_FILE_MB = 20;
 const PROBLEM_PROMPT = `${PROBLEM_ASK} в ответ на это — можно приложить скриншот (JPG, PNG, WebP), PDF или видео (MP4) до ${PROBLEM_FILE_MB} МБ. Я передам её администратору бота.`;
 const DM_CONTENT = ["text", "photo", "document", "video", "animation", "sticker", "voice", "audio", "video_note"];
-const PROBLEM_INPUT ={ force_reply: true, input_field_placeholder: "Что случилось?" };
+const PROBLEM_INPUT = { force_reply: true, input_field_placeholder: "Что случилось?" };
 const PROBLEM_LENGTH = 3500;
 const PROBLEM_FILES = ["image/jpeg", "image/png", "image/webp", "application/pdf", "video/mp4"];
 const PROBLEM_HEAD = /^Проблема от .+ \(id (\d+)\):/;
@@ -1033,7 +1033,7 @@ async function laundryStatus(env, chatId, userId) {
       running.length && `Работают: ${running.map((r) => `${r.num} до ${clock(env, r.ends_at)}`).join(", ")}`,
       !free.length && running.length && `Ближайшая закончит в ${clock(env, running[0].ends_at)}.`,
       nums((r) => LEFTOVER.has(r.kind)) && `С вещами внутри: ${nums((r) => LEFTOVER.has(r.kind))}`,
-      held.length && `Придержаны для очереди или брони:${held.map((r) => `${r.num} до ${clock(env, r.ends_at)}`).join(", ")}`,
+      held.length && `Придержаны для очереди или брони: ${held.map((r) => `${r.num} до ${clock(env, r.ends_at)}`).join(", ")}`,
       nums((r) => r.kind === "broken") && `Не работают: ${nums((r) => r.kind === "broken")}`,
       queue.length && `В очереди: ${queue.length} чел.`,
     ].filter(Boolean).join("\n"));
@@ -2427,11 +2427,12 @@ const ACTIONS = {
     if (!unlimited && editors.includes(me.id)) return `Ты уже исправлял время на этой программе. Ещё раз может только тот, кто запустил машину, или админ чата.`;
     if (!unlimited && editors.length >= TIMER_EDITS) return `Время на ${name} уже исправили ${TIMER_EDITS} человека — дальше может только тот, кто запустил машину, или админ чата.`;
     const planned = row.planned_at ?? row.ends_at;
+    const limit = Math.min(planned + TIMER_SHIFT_MINUTES * 60, row.started_at + MAX_MINUTES * 60);
     const lo = 1;
-    const hi = admin ? MAX_MINUTES : Math.floor((Math.min(planned + TIMER_SHIFT_MINUTES * 60, row.started_at + MAX_MINUTES * 60) - t) / 60);
+    const hi = admin ? MAX_MINUTES : Math.floor((limit - t) / 60);
     if (hi < lo) return `Время на ${name} уже нельзя исправить — напиши админу чата.`;
     if (minutes < lo || minutes > hi) {
-      return `Можно поставить от ${lo} до ${hi} мин: сократить время можно сколько угодно, продлить — не больше чем на ${TIMER_SHIFT_MINUTES} мин от изначального (до ${clock(env, planned)}).`;
+      return `Можно поставить от ${lo} до ${hi} мин: сократить время можно сколько угодно, продлить — не больше чем на ${TIMER_SHIFT_MINUTES} мин от изначального конца (было до ${clock(env, planned)}), то есть не позже ${clock(env, limit)}.`;
     }
     const ends = t + minutes * 60;
     if (Math.round((ends - row.ends_at) / 60) === 0) return `${name} и так закончит в ${clock(env, row.ends_at)}.`;
