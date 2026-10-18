@@ -361,7 +361,7 @@ const sheet = document.getElementById("sheet");
 let S = null;
 let tab = "w";
 let section = null;
-let moveTip = /_m\d+$/.test(tg.initDataUnsafe?.start_param || "");
+let tip = (tg.initDataUnsafe?.start_param || "").match(/_([mf])\d+$/)?.[1] || null;
 let roomDay = null;
 let roomMonth = null;
 let skew = 0;
@@ -673,7 +673,7 @@ async function act(body, done) {
   busy = true;
   try {
     const next = await api("/api/action", body);
-    if (body.action === "move" || body.action === "load") moveTip = false;
+    if (tip && TIPS[tip].done.includes(body.action)) tip = null;
     setState(next);
     closeSheet();
     if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
@@ -1036,13 +1036,27 @@ function guideCard(kind) {
     btn("Как пользоваться", GUIDES[kind].open));
 }
 
-function moveTipCard() {
-  if (!moveTip) return null;
+const TIPS = {
+  m: {
+    title: "Переложил чужие вещи?",
+    text: "Нажми на машину, откуда достал вещи, и выбери «Вещи переложены — указать куда». " +
+      "Если она здесь свободна, нажми на машину, куда положил вещи, и выбери «Тут чужие вещи, без программы».",
+    done: ["move", "load"],
+  },
+  f: {
+    title: "Стирка закончилась?",
+    text: "Забрал вещи — нажми на машину и выбери «Вещи забраны» или «Освободить». " +
+      "Если в ней лежат чужие вещи, выбери «Тут чужие вещи, без программы». " +
+      "А если машина здесь и так свободна, в следующий раз отметь стирку при запуске — бот сам напишет, когда она закончится.",
+    done: ["free", "load"],
+  },
+};
+
+function tipCard() {
+  if (!tip) return null;
   return el("section", { class: "card guide" },
-    el("div", { class: "row" }, el("h2", { style: "margin:0" }, "Переложил чужие вещи?"), el("button", { class: "x", onclick: () => { moveTip = false; render(); } }, "Скрыть")),
-    el("p", { class: "hint", style: "margin:6px 0 0" },
-      "Нажми на машину, откуда достал вещи, и выбери «Вещи переложены — указать куда». " +
-      "Если она здесь свободна, нажми на машину, куда положил вещи, и выбери «Тут чужие вещи, без программы»."));
+    el("div", { class: "row" }, el("h2", { style: "margin:0" }, TIPS[tip].title), el("button", { class: "x", onclick: () => { tip = null; render(); } }, "Скрыть")),
+    el("p", { class: "hint", style: "margin:6px 0 0" }, TIPS[tip].text));
 }
 
 function guideBubble(text) {
@@ -1643,7 +1657,7 @@ function laundryView() {
       guideHead("laundry", "Прачечная"),
       el("div", { class: "hint" }, "Свободно: " + counts.join(", "))),
     guideCard("laundry"),
-    moveTipCard(),
+    tipCard(),
     el("div", { class: "tabs" }, Object.entries(S.types).map(([t, cfg]) =>
       el("button", { class: t === tab ? "tab on" : "tab", onclick: () => { tab = t; render(); } }, cfg.title))),
     gridCard(),

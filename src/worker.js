@@ -57,6 +57,14 @@ const SESSION_COOKIE = "session";
 const HINT_HOURS = 48;
 const MOVE_WORDS = /(?<![а-яё])(перелож|перекин|вытащ|вынул)/i;
 const MOVE_HINT = "Переложил чужие вещи? Отметь это в приложении — хозяин узнает, где их искать.";
+const DONE_WORD = /^(все|всё|закончил[а-яё]*|постирал[а-яё]*)$/;
+const DONE_FILLER = new Set(["и", "у", "меня", "моя", "мой", "моё", "мое", "уже", "тоже", "вроде", "наконец"]);
+const MACHINE_WORD = /^(стирал|сушил|машин|стирк|сушк)/;
+const DONE_HINT = "Стирка закончилась? Отметь это в приложении — все увидят, что машина свободна.";
+const HINTS = {
+  m: { text: MOVE_HINT, match: (text) => MOVE_WORDS.test(text) },
+  f: { text: DONE_HINT, match: saysDone },
+};
 
 const LIMITS = {
   state: { limit: 60, seconds: 60, scaled: true },
@@ -1487,7 +1495,7 @@ async function onUpdate(update, env, origin) {
     if (answered.text?.includes(PROBLEM_ASK) || answered.text?.startsWith(ANSWER_HEAD)) return problem(env, msg, text);
   }
   if (msg.chat?.type === "private" && msg.from && !msg.text?.startsWith("/") && DM_CONTENT.some((k) => msg[k])) return stray(env, msg);
-  if ((msg.chat?.type === "group" || msg.chat?.type === "supergroup") && !msg.text?.startsWith("/")) return moveHint(env, msg);
+  if ((msg.chat?.type === "group" || msg.chat?.type === "supergroup") && !msg.text?.startsWith("/")) return chatHint(env, msg);
   if (typeof msg.text !== "string" || !msg.text.startsWith("/")) return;
   const [command, target] = msg.text.trim().split(/\s+/)[0].split("@");
   if (target && target.toLowerCase() !== (await username(env)).toLowerCase()) return;
@@ -1529,15 +1537,24 @@ async function onUpdate(update, env, origin) {
   else if (command !== "/problem" && command !== "/status" && command !== "/login" && command !== DONE_COMMAND) await moderate(env, msg, command, thread, anonymousAdmin ? null : msg.from);
 }
 
-async function moveHint(env, msg) {
+function saysDone(text) {
+  if (text.includes("?")) return false;
+  const words = text.toLowerCase().match(/[а-яё]+|\d+/g) || [];
+  return words.length <= 6 && words.some((w) => DONE_WORD.test(w)) &&
+    words.every((w) => DONE_WORD.test(w) || DONE_FILLER.has(w) || /^\d+$/.test(w) || MACHINE_WORD.test(w));
+}
+
+async function chatHint(env, msg) {
   const text = msg.text ?? msg.caption;
-  if (!laundry(env) || !msg.from || msg.from.is_bot || typeof text !== "string" || !MOVE_WORDS.test(text)) return;
+  if (!laundry(env) || !msg.from || msg.from.is_bot || typeof text !== "string") return;
+  const kind = Object.keys(HINTS).find((k) => HINTS[k].match(text));
+  if (!kind) return;
   const chatId = msg.chat.id;
-  if (!(await first(env, "SELECT 1 AS ok FROM boards WHERE chat_id = ?", chatId)) || spend(env, "hint", chatId)) return;
-  const res = await say(env, chatId, MOVE_HINT, {
+  if (!(await first(env, "SELECT 1 AS ok FROM boards WHERE chat_id = ?", chatId)) || spend(env, "hint", `${chatId}:${kind}`)) return;
+  const res = await say(env, chatId, HINTS[kind].text, {
     message_thread_id: msg.is_topic_message ? msg.message_thread_id : null,
     reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
-    reply_markup: { inline_keyboard: [[{ text: "Отметить в приложении", url: await appLink(env, chatId, `m${msg.message_id}`) }]] },
+    reply_markup: { inline_keyboard: [[{ text: "Отметить в приложении", url: await appLink(env, chatId, `${kind}${msg.message_id}`) }]] },
   });
   if (!res.ok) return;
   await env.DB.prepare("INSERT OR REPLACE INTO hints (chat_id, source_id, message_id, at) VALUES (?, ?, ?, ?)")

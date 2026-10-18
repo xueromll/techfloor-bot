@@ -167,4 +167,16 @@ st, d = api(via); assert st == 200, d
 st, d = api(via); assert st == 200, d
 assert deleted()[gone:] == [{"chat_id": CH, "message_id": hints[0]["message_id"]}], deleted()[gone:]
 assert one("SELECT COUNT(*) FROM hints") == 0
+print("--- «5 всё», «закончилась», «постиралась» в чате — своя подсказка; «все заняты» и вопросы её не вызывают")
+before = len(sent())
+post(7011, text="все заняты")
+post(7012, text="всё?")
+post(7013, text="стиралка 5 всё")
+post(7014, text="постиралась")
+hints = chat(before)
+assert len(hints) == 1 and hints[0]["text"].startswith("Стирка закончилась?"), hints
+assert hints[0]["markup"]["inline_keyboard"][0][0]["url"].endswith(f"?startapp={CH}_f7013"), hints
+gone = len(deleted())
+st, d = api(init(2, "Боря", None, start=f"{CH}_f7013")); assert st == 200, d
+assert deleted()[gone:] == [{"chat_id": CH, "message_id": hints[0]["message_id"]}], deleted()[gone:]
 print("HABITS TESTS OK")
