@@ -81,6 +81,7 @@
     WebView: { initParams: params, isIframe: iframe, postEvent: post, receiveEvent: receive },
     WebApp: {
       initData: params.tgWebAppData || "",
+      initDataUnsafe: { start_param: new URLSearchParams(params.tgWebAppData || "").get("start_param") || undefined },
       platform: params.tgWebAppPlatform || "unknown",
       version: version,
       isVersionAtLeast: atLeast,
@@ -740,7 +741,7 @@ function gridCard() {
   const lines = S.machines
     .filter((m) => m.t === tab && m.status !== "free")
     .map((m) => el("div", { class: "line", onclick: () => openMachine(m) },
-      el("span", { class: "dot " + m.status }), rich`${mname(m)} — ${statusText(m)}`));
+      el("span", { class: "dot " + m.status }), el("span", {}, rich`${mname(m)} — ${statusText(m)}`)));
   return el("section", { class: "card" },
     walls,
     el("div", { class: "legend hint" },
@@ -1207,7 +1208,7 @@ function mineCard() {
     return rich`${mname(m)} — ${statusText(m)}`;
   };
   return el("section", { class: "card" }, el("h2", {}, "Мои машины"),
-    mine.map((m) => el("div", { class: "line", onclick: () => openMachine(m) }, el("span", { class: "dot " + m.status }), line(m))));
+    mine.map((m) => el("div", { class: "line", onclick: () => openMachine(m) }, el("span", { class: "dot " + m.status }), el("span", {}, line(m)))));
 }
 
 function confirmAct(text, body) {
