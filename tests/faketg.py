@@ -4,6 +4,7 @@ from common import ADMIN_UID, BAD_THREAD, DM_BLOCKED_UID, FRESH_UID, OUTSIDER_UI
 n = [100]
 sent = []
 edits = []
+deleted = []
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def reply(self, data):
@@ -30,9 +31,10 @@ class H(BaseHTTPRequestHandler):
             print(f"{where}: " + body["text"].replace("\n", " | ")[:90], flush=True)
         if method == "editMessageText" and body["chat_id"] < 0:
             edits.append({"chat_id": body["chat_id"], "message_id": body["message_id"], "text": body["text"], "markup": body.get("reply_markup")})
+        if method == "deleteMessage": deleted.append({"chat_id": body["chat_id"], "message_id": body["message_id"]})
         if method == "leaveChat": sent.append({"chat_id": body["chat_id"], "left": True})
         if method.startswith("setMy"): print("TG", method, json.dumps(body, ensure_ascii=False)[:140], flush=True)
         self.reply({"ok": True, "result": res})
     def do_GET(self):
-        self.reply(edits if self.path == "/edits" else sent)
+        self.reply(edits if self.path == "/edits" else deleted if self.path == "/deleted" else sent)
 ThreadingHTTPServer(("127.0.0.1", 8799), H).serve_forever()

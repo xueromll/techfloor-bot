@@ -118,15 +118,24 @@ const BADGES = [
 
 const DONE_COMMAND = "/maintenance_done";
 const DONE_KEY = "notice_maintenance_done";
+const BOO_LIMIT = 3;
+const BOO_MS = 1000;
 const DONE_NOTICE =
   "<b>технические работы закончились</b>\n\n" +
-  "бот снова работает в обычном режиме. спасибо, что потерпели 🙏\n\n" +
-  "что нового:\n" +
-  "- приложение теперь открывается без VPN;\n" +
-  "- напоминания забрать вещи с кнопками «вещи забраны», «через 15 мин» и «можно переложить»;\n" +
-  "- вечерняя сводка по прачечной в личку — включается галочкой в приложении;\n" +
-  "- значки: «молния», «герой прачечной», «сова» и «чистая неделя».\n\n" +
-  "если что-то сломалось или работает странно, напишите в @technical_floor_bot /problem.";
+  "бот снова работает. спасибо, что подождали 🙏\n\n" +
+  "<b>главное: теперь всё работает без VPN</b>\n" +
+  "прачечная открывается кнопкой «Открыть прачечную» — она под этим сообщением и в закрепе. " +
+  "а если удобнее с компьютера или просто в браузере, у прачечной теперь есть сайт: напишите @technical_floor_bot /login, и он пришлёт ссылку для входа.\n\n" +
+  "<b>что ещё нового</b>\n" +
+  "— когда ваша стирка закончится, бот напишет вам в личные сообщения. под сообщением будут кнопки: «Вещи забраны» — если уже забрали, «Через 15 мин» — если скоро подойдёте, «Можно переложить» — если не успеваете, тогда следующий человек аккуратно переложит ваши вещи. " +
+  "чтобы бот мог вам писать, один раз откройте @technical_floor_bot и нажмите «Старт»;\n" +
+  "— видите, что вещи из машины уже забрали, а она всё ещё числится занятой? нажмите «Вещи забраны» в приложении — теперь это может сделать любой, а владелец вещей узнает, кто отметил;\n" +
+  "— если бот не знает, чьи вещи в машине, он пишет об этом в чат. под таким сообщением теперь есть кнопка «Это мои вещи» — нажмите её, если вещи ваши, и бот будет присылать напоминания вам;\n" +
+  "— в общем чате стало меньше сообщений: предупреждение «скоро закончится» больше не повторяется, а просто обновляется, когда стирка закончилась;\n" +
+  "— если машина закончит раньше или позже, чем показывает бот, время можно поправить в приложении — теперь для этого есть удобные колёсики с часами и минутами. кто и насколько может менять время, написано в инструкции по прачечной в приложении;\n" +
+  "— по желанию бот может каждый вечер присылать короткую сводку: какие машины свободны, когда в прачечной больше всего народу и когда там пусто. включается галочкой в приложении;\n" +
+  "— в приложении появились значки — например, за то, что быстро забираете бельё, — и доска почёта недели 🙂\n\n" +
+  "если что-то не работает или непонятно, напишите @technical_floor_bot команду /problem и опишите, что случилось.";
 
 const PROBLEM_ASK = "Опиши проблему одним сообщением";
 const PROBLEM_FILE_MB = 20;
@@ -1472,7 +1481,7 @@ async function onUpdate(update, env, origin) {
       });
       return;
     }
-    if (command === DONE_COMMAND) return msg.from.id === Number(env.OWNER_ID) ? announceDone(env, chat.id) : undefined;
+    if (command === DONE_COMMAND) return msg.from.id === Number(env.OWNER_ID) ? announceDone(env, chat.id, origin) : undefined;
     if (command === "/status") return tg(env, "sendMessage", { chat_id: chat.id, parse_mode: "HTML", ...(await statusView(env, msg.from.id)) });
     if (command === "/login" || (command === "/start" && msg.text.trim().split(/\s+/)[1] === "login")) {
       return tg(env, "sendMessage", { chat_id: chat.id, ...(await loginView(env, msg.from, origin)) });
@@ -1495,12 +1504,19 @@ async function onUpdate(update, env, origin) {
   else if (command !== "/problem" && command !== "/status" && command !== "/login" && command !== DONE_COMMAND) await moderate(env, msg, command, thread, anonymousAdmin ? null : msg.from);
 }
 
-async function announceDone(env, ownerChat) {
+async function announceDone(env, ownerChat, origin) {
   if (!(await changed(env, "INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)", DONE_KEY, now()))) {
     return tg(env, "sendMessage", { chat_id: ownerChat, text: "Сообщение о конце технических работ уже отправлено." });
   }
   const chats = allowedChats(env);
-  for (const chatId of chats) await say(env, Number(chatId), DONE_NOTICE);
+  for (const chatId of chats) {
+    const keyboard = [
+      [{ text: "Открыть прачечную", url: await appLink(env, Number(chatId)) }],
+      [{ text: "О-о, сайт? Посмотреть!", url: `${origin}/` }],
+      [{ text: "эта кнопка ничего не сделает", callback_data: "boo" }],
+    ];
+    await say(env, Number(chatId), DONE_NOTICE, { reply_markup: { inline_keyboard: keyboard } });
+  }
   return tg(env, "sendMessage", { chat_id: ownerChat, text: `Сообщение о конце технических работ отправлено в чаты: ${chats.join(", ") || "нет разрешённых чатов"}.` });
 }
 
@@ -1800,9 +1816,22 @@ async function digestTap(env, cq, what, chatId) {
   await tapRewrite(env, cq, replies[what]);
 }
 
+async function booTap(env, cq) {
+  await tapAnswer(env, cq);
+  const msg = cq.message;
+  if (!msg?.chat) return;
+  const fresh = await changed(env, "INSERT INTO meta (key, value) VALUES (?, 1) ON CONFLICT (key) DO UPDATE SET value = value + 1 WHERE value < ?", `boo:${cq.from.id}`, BOO_LIMIT);
+  if (!fresh) return;
+  const res = await say(env, msg.chat.id, "Бу", { message_thread_id: msg.is_topic_message ? msg.message_thread_id : null });
+  if (!res.ok) return;
+  await new Promise((done) => setTimeout(done, BOO_MS));
+  await tg(env, "deleteMessage", { chat_id: msg.chat.id, message_id: res.result.message_id });
+}
+
 async function onCallback(env, cq) {
   if (!cq.from || spend(env, "tap", cq.from.id)) return;
   const data = String(cq.data || "");
+  if (data === "boo") return booTap(env, cq);
   const pickup = data.match(/^l([pzm]):(-?\d+):([wd]):(\d+):(\d+(?:\.\d+)?)$/);
   const claim = data.match(/^lc:(-?\d+):([wd]):(\d+):(\d+(?:\.\d+)?)$/);
   if (claim) return claimTap(env, cq, Number(claim[1]), claim[2], Number(claim[3]), Number(claim[4]));
