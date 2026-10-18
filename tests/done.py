@@ -179,20 +179,4 @@ text = said(OUTSIDER_UID, before)[0]["text"]; assert "Не нашёл праче
 print("--- старая кнопка «Обновить» в уже отправленных сводках ничего не ломает")
 st, d = update({"callback_query": {"id": "cb9", "data": "ls", "from": {"id": 2, "first_name": "Боря"}, "message": {"message_id": 777, "chat": {"id": 2, "type": "private"}}}})
 assert st == 200, d
-print("--- /maintenance_done: объявление с кнопками прачечной и сайта; «ничего не сделает» говорит «Бу» на секунду, не больше трёх раз")
-sql("DELETE FROM meta WHERE key = 'notice_maintenance_done' OR key LIKE 'boo:%'")
-before = len(sent())
-update({"message": {"message_id": 9, "text": "/maintenance_done", "from": {"id": 1, "first_name": "Аня"}, "chat": {"id": 1, "type": "private"}}})
-notice = next(x for x in sent()[before:] if x["chat_id"] == CH)
-buttons = [b for row in notice["markup"]["inline_keyboard"] for b in row]
-assert [b["text"] for b in buttons] == ["Открыть прачечную", "О-о, сайт? Посмотреть!", "эта кнопка ничего не сделает"], buttons
-assert buttons[1]["url"] == "https://relay.example/" and buttons[2]["callback_data"] == "boo", buttons
-def boos(uid):
-    before, gone = len(sent()), len(deleted())
-    press("boo", uid)
-    said = [x for x in sent()[before:] if x["chat_id"] == CH and x["text"] == "Бу"]
-    assert [x["message_id"] for x in said] == [x["message_id"] for x in deleted()[gone:]], (said, deleted()[gone:])
-    return len(said)
-assert [boos(2) for _ in range(4)] == [1, 1, 1, 0]
-assert boos(3) == 1
 print("DONE TESTS OK")

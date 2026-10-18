@@ -92,34 +92,17 @@ const ANONYMOUS = "Аноним";
 const NOT_FROM_TELEGRAM = "Открой приложение через Telegram.";
 const LOGIN_AGAIN = "Сессия на сайте закончилась — получи новую ссылку для входа: отправь боту /login.";
 const LOGIN_EXPIRED = "Ссылка для входа устарела или уже использована — отправь боту /login ещё раз.";
-const WEB_HELP = "Удобнее в браузере? Отправь /login — пришлю ссылку для входа на сайт.\n\n";
+const STATUS_LINE = "/status — что свободно и где твои вещи\n";
+const HELP_TAIL =
+  "/login — вход через браузер\n" +
+  "/problem — сообщить о проблеме";
 
 const HELP =
-  "Привет! Я бот техэтажа общаги.\n\n" +
-  "Прачечная — стиралки и сушилки: что свободно, кто занял и сколько осталось, очередь, бронь, " +
-  "напоминания и отметки «внутри чужие вещи, программа не запущена» и «переложил чужие вещи».\n\n" +
-  "Как пользоваться: в чате общаги открой тему про стирку и нажми кнопку «Открыть прачечную» " +
-  "в закреплённом сообщении.\n\n" +
-  "Лень открывать приложение? Отправь /status — пришлю, какие машины свободны, когда освободятся занятые и что с твоими вещами.\n\n" +
-  WEB_HELP +
-  "Уведомления: напоминания про стирку приходят сюда, в личку. Теперь я могу тебе писать.\n\n" +
-  "Что-то не работает? Отправь /problem и опиши проблему.";
-
-const ROOM_HELP =
-  "Привет! Я бот техэтажа общаги.\n\n" +
-  "• Прачечная — стиралки и сушилки: что свободно, кто занял и сколько осталось, очередь, бронь, " +
-  "напоминания и отметки «внутри чужие вещи, программа не запущена» и «переложил чужие вещи».\n" +
-  "• Игровая — календарь: свободна ли она сейчас, брони на любой день и бронь своего времени. " +
-  "Бронь может быть открытым событием — тогда любой может нажать «Я приду». " +
-  "К закрытой брони можно попроситься — организатор примет или откажет.\n\n" +
-  "Как пользоваться: в чате общаги открой тему про стирку или про игровую и нажми кнопку " +
-  "в закреплённом сообщении — «Открыть прачечную» или «Открыть игровую».\n\n" +
-  "Лень открывать приложение? Отправь /status — пришлю, какие стиралки и сушилки свободны, когда освободятся занятые и что с твоими вещами.\n\n" +
-  WEB_HELP +
-  "Уведомления: напоминания про стирку и про брони игровой приходят сюда, в личку — " +
-  "вечером накануне я спрошу, нужна ли бронь на завтра, и напомню за полчаса до начала. " +
-  "Теперь я могу тебе писать.\n\n" +
-  "Что-то не работает? Отправь /problem и опиши проблему.";
+  "Привет! Я бот прачечной техэтажа 🧺\n\n" +
+  "Открывай прачечную кнопкой в закреплённом сообщении темы про стирку. " +
+  "Напоминания буду присылать сюда.\n\n" +
+  STATUS_LINE +
+  HELP_TAIL;
 
 const BADGES = [
   { id: "lightning", name: "Молния", text: `Забираешь бельё в первые ${LIGHTNING_MINUTES} минут после конца программы`, board: "Быстрее всех забирают бельё", need: 3 },
@@ -127,27 +110,6 @@ const BADGES = [
   { id: "owl", name: "Сова", text: `Стираешь с ${QUIET_HOURS[0]} до ${QUIET_HOURS[1]} утра, когда в прачечной пусто`, board: "Стирают, пока все спят", need: 2 },
   { id: "clean", name: "Чистая неделя", text: "Всю неделю вещи забраны меньше чем за час", need: 2 },
 ];
-
-const DONE_COMMAND = "/maintenance_done";
-const DONE_KEY = "notice_maintenance_done";
-const BOO_LIMIT = 3;
-const BOO_MS = 1000;
-const DONE_NOTICE =
-  "<b>технические работы закончились</b>\n\n" +
-  "бот снова работает. спасибо, что подождали 🙏\n\n" +
-  "<b>главное: теперь всё работает без VPN</b>\n" +
-  "прачечная открывается кнопкой «Открыть прачечную» — она под этим сообщением и в закрепе. " +
-  "а если удобнее с компьютера или просто в браузере, у прачечной теперь есть сайт: напишите @technical_floor_bot /login, и он пришлёт ссылку для входа.\n\n" +
-  "<b>что ещё нового</b>\n" +
-  "— когда ваша стирка закончится, бот напишет вам в личные сообщения. под сообщением будут кнопки: «Вещи забраны» — если уже забрали, «Через 15 мин» — если скоро подойдёте, «Можно переложить» — если не успеваете, тогда следующий человек аккуратно переложит ваши вещи. " +
-  "чтобы бот мог вам писать, один раз откройте @technical_floor_bot и нажмите «Старт»;\n" +
-  "— видите, что вещи из машины уже забрали, а она всё ещё числится занятой? нажмите «Вещи забраны» в приложении — теперь это может сделать любой, а владелец вещей узнает, кто отметил;\n" +
-  "— если бот не знает, чьи вещи в машине, он пишет об этом в чат. под таким сообщением теперь есть кнопка «Это мои вещи» — нажмите её, если вещи ваши, и бот будет присылать напоминания вам;\n" +
-  "— в общем чате стало меньше сообщений: предупреждение «скоро закончится» больше не повторяется, а просто обновляется, когда стирка закончилась;\n" +
-  "— если машина закончит раньше или позже, чем показывает бот, время можно поправить в приложении — теперь для этого есть удобные колёсики с часами и минутами. кто и насколько может менять время, написано в инструкции по прачечной в приложении;\n" +
-  "— по желанию бот может каждый вечер присылать короткую сводку: какие машины свободны, когда в прачечной больше всего народу и когда там пусто. включается галочкой в приложении;\n" +
-  "— в приложении появились значки — например, за то, что быстро забираете бельё, — и доска почёта недели 🙂\n\n" +
-  "если что-то не работает или непонятно, напишите @technical_floor_bot команду /problem и опишите, что случилось.";
 
 const PROBLEM_ASK = "Опиши проблему одним сообщением";
 const PROBLEM_FILE_MB = 20;
@@ -184,17 +146,10 @@ const SHORT_DESCRIPTION = "Прачечная техэтажа: кто заня�
 const ROOM_SHORT_DESCRIPTION = "Прачечная и игровая техэтажа: кто занял, очередь, брони и напоминания.";
 
 const PLAYROOM_HELP =
-  "Привет! Я бот техэтажа общаги.\n\n" +
-  "Игровая — календарь: свободна ли она сейчас, брони на любой день и бронь своего времени. " +
-  "Бронь может быть открытым событием — тогда любой может нажать «Я приду». " +
-  "К закрытой брони можно попроситься — организатор примет или откажет.\n\n" +
-  "Как пользоваться: в чате общаги открой тему про игровую и нажми кнопку «Открыть игровую» " +
-  "в закреплённом сообщении.\n\n" +
-  WEB_HELP +
-  "Уведомления: напоминания про брони игровой приходят сюда, в личку — " +
-  "вечером накануне я спрошу, нужна ли бронь на завтра, и напомню за полчаса до начала. " +
-  "Теперь я могу тебе писать.\n\n" +
-  "Что-то не работает? Отправь /problem и опиши проблему.";
+  "Привет! Я бот игровой техэтажа 🎮\n\n" +
+  "Открывай календарь кнопкой в закреплённом сообщении темы про игровую. " +
+  "Напоминания о бронях буду присылать сюда.\n\n" +
+  HELP_TAIL;
 
 const PLAYROOM_DESCRIPTION =
   "Бот игровой техэтажа общаги.\n\n" +
@@ -326,7 +281,7 @@ const PLAYROOM_ONLY = new Set(["room_book", "room_edit", "room_cancel", "room_jo
 const LAUNDRY_ONLY = new Set(["take", "load", "claim", "free", "queue", "unqueue", "next", "unnext", "book", "unbook", "move", "picked", "broken", "fixed", "retime", "admin_reset_laundry", "digest"]);
 const ANNOUNCING = new Set(["room_book", "room_edit", "room_cancel"]);
 const UNPINNED = new Set(["dm", "problem", "digest"]);
-const COMMANDS = ["/start", "/problem", "/status", "/login", "/board", "/playroom", "/unpin", "/block", "/unblock", "/blocked", DONE_COMMAND];
+const COMMANDS = ["/start", "/problem", "/status", "/login", "/board", "/playroom", "/unpin", "/block", "/unblock", "/blocked"];
 const memberCache = new Map();
 const authCache = new Map();
 const blockCache = new Map();
@@ -512,7 +467,7 @@ const now = () => Date.now() / 1000;
 const playroom = (env) => env.PLAYROOM === "on";
 const laundry = (env) => env.LAUNDRY !== "off";
 const bySection = (env, both, laundryOnly, playroomOnly) => (!playroom(env) ? laundryOnly : laundry(env) ? both : playroomOnly);
-const helpText = (env) => bySection(env, ROOM_HELP, HELP, PLAYROOM_HELP);
+const helpText = (env) => bySection(env, HELP, HELP, PLAYROOM_HELP);
 const boardCommands = (env) => [laundry(env) && "/board", playroom(env) && "/playroom"].filter(Boolean).join(" или ");
 const allowedChats = (env) => String(env.ALLOWED_CHATS || "").split(/[\s,]+/).filter(Boolean);
 const allowed = (env, chatId) => {
@@ -1514,7 +1469,6 @@ async function onUpdate(update, env, origin) {
       });
       return;
     }
-    if (command === DONE_COMMAND) return msg.from.id === Number(env.OWNER_ID) ? announceDone(env, chat.id, origin) : undefined;
     if (command === "/status") return tg(env, "sendMessage", { chat_id: chat.id, parse_mode: "HTML", ...(await statusView(env, msg.from.id)) });
     if (command === "/login" || (command === "/start" && msg.text.trim().split(/\s+/)[1] === "login")) {
       return tg(env, "sendMessage", { chat_id: chat.id, ...(await loginView(env, msg.from, origin)) });
@@ -1534,7 +1488,7 @@ async function onUpdate(update, env, origin) {
   if (command === "/playroom") await updateRoomBoard(env, chat.id, true, thread);
   else if (command === "/board" || command === "/start") await updatePinned(env, chat.id, command === "/board", thread);
   else if (command === "/unpin") await unpin(env, msg, thread);
-  else if (command !== "/problem" && command !== "/status" && command !== "/login" && command !== DONE_COMMAND) await moderate(env, msg, command, thread, anonymousAdmin ? null : msg.from);
+  else if (command !== "/problem" && command !== "/status" && command !== "/login") await moderate(env, msg, command, thread, anonymousAdmin ? null : msg.from);
 }
 
 function saysDone(text) {
@@ -1564,22 +1518,6 @@ async function chatHint(env, msg) {
 async function dropHint(env, chatId, sourceId) {
   const row = await first(env, "DELETE FROM hints WHERE chat_id = ? AND source_id = ? RETURNING message_id", chatId, sourceId);
   if (row) await tg(env, "deleteMessage", { chat_id: chatId, message_id: row.message_id });
-}
-
-async function announceDone(env, ownerChat, origin) {
-  if (!(await changed(env, "INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)", DONE_KEY, now()))) {
-    return tg(env, "sendMessage", { chat_id: ownerChat, text: "Сообщение о конце технических работ уже отправлено." });
-  }
-  const chats = allowedChats(env);
-  for (const chatId of chats) {
-    const keyboard = [
-      [{ text: "Открыть прачечную", url: await appLink(env, Number(chatId)) }],
-      [{ text: "О-о, сайт? Посмотреть!", url: `${origin}/` }],
-      [{ text: "эта кнопка ничего не сделает", callback_data: "boo" }],
-    ];
-    await say(env, Number(chatId), DONE_NOTICE, { reply_markup: { inline_keyboard: keyboard } });
-  }
-  return tg(env, "sendMessage", { chat_id: ownerChat, text: `Сообщение о конце технических работ отправлено в чаты: ${chats.join(", ") || "нет разрешённых чатов"}.` });
 }
 
 async function problem(env, msg, text) {
@@ -1878,22 +1816,9 @@ async function digestTap(env, cq, what, chatId) {
   await tapRewrite(env, cq, replies[what]);
 }
 
-async function booTap(env, cq) {
-  await tapAnswer(env, cq);
-  const msg = cq.message;
-  if (!msg?.chat) return;
-  const fresh = await changed(env, "INSERT INTO meta (key, value) VALUES (?, 1) ON CONFLICT (key) DO UPDATE SET value = value + 1 WHERE value < ?", `boo:${cq.from.id}`, BOO_LIMIT);
-  if (!fresh) return;
-  const res = await say(env, msg.chat.id, "Бу", { message_thread_id: msg.is_topic_message ? msg.message_thread_id : null });
-  if (!res.ok) return;
-  await new Promise((done) => setTimeout(done, BOO_MS));
-  await tg(env, "deleteMessage", { chat_id: msg.chat.id, message_id: res.result.message_id });
-}
-
 async function onCallback(env, cq) {
   if (!cq.from || spend(env, "tap", cq.from.id)) return;
   const data = String(cq.data || "");
-  if (data === "boo") return booTap(env, cq);
   const pickup = data.match(/^l([pzm]):(-?\d+):([wd]):(\d+):(\d+(?:\.\d+)?)$/);
   const claim = data.match(/^lc:(-?\d+):([wd]):(\d+):(\d+(?:\.\d+)?)$/);
   if (claim) return claimTap(env, cq, Number(claim[1]), claim[2], Number(claim[3]), Number(claim[4]));
