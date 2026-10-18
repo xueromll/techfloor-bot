@@ -323,17 +323,18 @@
   .bubble { background: var(--card); border-radius: 12px 12px 12px 4px; padding: 8px 10px; font-size: 14px; }
   .bubble b { display: block; color: var(--accent); font-size: 13px; }
   .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .wheel-box { position: relative; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); overflow: hidden; }
-  .wheel-list { height: 180px; overflow-y: auto; scroll-snap-type: y mandatory; overscroll-behavior: contain; scrollbar-width: none; outline: none; -webkit-mask-image: linear-gradient(transparent, #000 35%, #000 65%, transparent); mask-image: linear-gradient(transparent, #000 35%, #000 65%, transparent); }
+  .wheel { --row: 34px; --rows: 5; position: relative; display: grid; grid-template-columns: 1fr 1fr; max-width: 260px; margin: 0 auto; border-radius: 12px; background: var(--bg); overflow: hidden; }
+  .wheel-band { position: absolute; left: 8px; right: 8px; top: calc(var(--row) * (var(--rows) - 1) / 2); height: var(--row); border-radius: 9px; background: rgba(128, 128, 128, 0.16); pointer-events: none; }
+  .wheel-col { position: relative; }
+  .wheel-list { height: calc(var(--row) * var(--rows)); overflow-y: auto; scroll-snap-type: y mandatory; overscroll-behavior: contain; scrollbar-width: none; outline: none; -webkit-mask-image: linear-gradient(transparent, #000 40%, #000 60%, transparent); mask-image: linear-gradient(transparent, #000 40%, #000 60%, transparent); }
   .wheel-list::-webkit-scrollbar { display: none; }
-  .wheel-pad { height: 72px; }
-  .wheel-item { height: 36px; line-height: 36px; text-align: center; font-size: 18px; color: var(--hint); scroll-snap-align: center; cursor: pointer; user-select: none; }
-  .wheel-item.on { color: var(--text); font-weight: 600; font-size: 20px; }
-  .wheel-band { position: absolute; left: 6px; right: 6px; top: 72px; height: 36px; border-radius: 8px; background: rgba(128, 128, 128, 0.14); pointer-events: none; }
-  .wheel-list:focus-visible + .wheel-band { box-shadow: 0 0 0 2px var(--accent); }
-  .demo .wheel-box { background: var(--card); }
-  .demo .wheel-list { height: 108px; overflow: hidden; }
-  .demo .wheel-band { top: 36px; }
+  .wheel-pad { height: calc(var(--row) * (var(--rows) - 1) / 2); }
+  .wheel-item { height: var(--row); line-height: var(--row); padding-right: calc(50% + 2px); text-align: right; font-size: 20px; font-variant-numeric: tabular-nums; color: var(--hint); scroll-snap-align: center; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent; }
+  .wheel-item.on { color: var(--text); font-weight: 600; }
+  .wheel-unit { position: absolute; left: calc(50% + 6px); top: calc(var(--row) * (var(--rows) - 1) / 2); line-height: var(--row); font-size: 15px; color: var(--hint); pointer-events: none; }
+  .wheel-col:focus-within .wheel-unit { color: var(--accent); }
+  .demo .wheel { --rows: 3; background: var(--card); }
+  .demo .wheel-list { overflow: hidden; }
   .total { text-align: center; color: var(--hint); font-size: 13px; margin: 10px 0 0; min-height: 18px; }
   .chip { border: 0; border-radius: 9px; padding: 10px 0; font: inherit; font-weight: 600; background: rgba(128, 128, 128, 0.14); color: var(--text); cursor: pointer; }
   .label { font-size: 13px; color: var(--hint); margin-top: 8px; }
@@ -413,9 +414,9 @@ function durationShort(m) {
   return rest ? `${h}ч${rest}` : `${h} ч`;
 }
 
-const WHEEL_ROW = 36;
+const WHEEL_ROW = 34;
 
-function wheel(count, text, onPick, onEnter) {
+function wheel(count, text, unit, onPick, onEnter) {
   const items = Array.from({ length: count }, (_, i) => el("div", { class: "wheel-item", onclick: () => go(i) }, text(i)));
   const list = el("div", { class: "wheel-list", tabindex: "0" }, el("div", { class: "wheel-pad" }), items, el("div", { class: "wheel-pad" }));
   let cur = -1;
@@ -449,8 +450,8 @@ function wheel(count, text, onPick, onEnter) {
     else if (e.key === "ArrowUp") { e.preventDefault(); go(cur - 1); }
     else if (e.key === "Enter") onEnter();
   });
-  const box = el("div", { class: "wheel-box" }, list, el("div", { class: "wheel-band" }));
-  return { box, get: () => cur, set: go };
+  const col = el("div", { class: "wheel-col" }, list, el("span", { class: "wheel-unit" }, unit));
+  return { col, get: () => cur, set: go };
 }
 
 function timeFields(onChange, onEnter, minutes = 0) {
@@ -461,8 +462,8 @@ function timeFields(onChange, onEnter, minutes = 0) {
     if (hours.get() * 60 + mins.get() > max) mins.set(max % 60);
     else onChange();
   };
-  const hours = wheel(Math.floor(max / 60) + 1, (i) => `${i} ч`, pick, onEnter);
-  const mins = wheel(60, (i) => `${String(i).padStart(2, "0")} мин`, pick, onEnter);
+  const hours = wheel(Math.floor(max / 60) + 1, String, "ч", pick, onEnter);
+  const mins = wheel(60, (i) => String(i).padStart(2, "0"), "мин", pick, onEnter);
   const total = () => Math.min(max, hours.get() * 60 + mins.get());
   const set = (v, smooth = true) => {
     v = Math.max(0, Math.min(max, v));
@@ -472,9 +473,7 @@ function timeFields(onChange, onEnter, minutes = 0) {
   set(minutes, false);
   ready = true;
   requestAnimationFrame(() => set(total(), false));
-  const row = el("div", { class: "pair" },
-    el("div", {}, el("label", {}, "часы"), hours.box),
-    el("div", {}, el("label", {}, "минуты"), mins.box));
+  const row = el("div", { class: "wheel" }, el("div", { class: "wheel-band" }), hours.col, mins.col);
   return { row, total, set };
 }
 
@@ -1008,14 +1007,13 @@ function demoDays(marks) {
 }
 
 function demoWheel(minutes) {
-  const col = (label, count, at, text) => el("div", {}, el("label", {}, label),
-    el("div", { class: "wheel-box" },
-      el("div", { class: "wheel-list" }, [at - 1, at, at + 1].map((v) =>
-        el("div", { class: v === at ? "wheel-item on" : "wheel-item" }, v >= 0 && v < count ? text(v) : ""))),
-      el("div", { class: "wheel-band" })));
-  return el("div", { class: "pair" },
-    col("часы", Math.floor(S.maxMinutes / 60) + 1, Math.floor(minutes / 60), (i) => `${i} ч`),
-    col("минуты", 60, minutes % 60, (i) => `${String(i).padStart(2, "0")} мин`));
+  const col = (count, at, text, unit) => el("div", { class: "wheel-col" },
+    el("div", { class: "wheel-list" }, [at - 1, at, at + 1].map((v) =>
+      el("div", { class: v === at ? "wheel-item on" : "wheel-item" }, v >= 0 && v < count ? text(v) : ""))),
+    el("span", { class: "wheel-unit" }, unit));
+  return el("div", { class: "wheel" }, el("div", { class: "wheel-band" }),
+    col(Math.floor(S.maxMinutes / 60) + 1, Math.floor(minutes / 60), String, "ч"),
+    col(60, minutes % 60, (i) => String(i).padStart(2, "0"), "мин"));
 }
 
 function demoField(label, value) {
