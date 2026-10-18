@@ -320,6 +320,7 @@
   .demo .line { cursor: default; padding: 0; }
   .name-toggle { margin: 0 0 12px; }
   .name-toggle span { color: var(--text); }
+  a.who { color: var(--tg-theme-link-color, var(--accent)); text-decoration: none; }
   .bubble { background: var(--card); border-radius: 12px 12px 12px 4px; padding: 8px 10px; font-size: 14px; }
   .bubble b { display: block; color: var(--accent); font-size: 13px; }
   .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -383,11 +384,29 @@ function el(tag, props, ...children) {
 }
 
 const now = () => Date.now() / 1000 + skew;
-const who = (p) => (p.username ? "@" + p.username : p.name);
+function who(p) {
+  const text = p.username ? "@" + p.username : p.name;
+  if (!p.id || isMe(p)) return text;
+  const href = p.username ? `https://t.me/${p.username}` : `tg://user?id=${p.id}`;
+  return el("a", { class: "who", href, target: p.username ? "_blank" : null, rel: "noopener", onclick: (e) => openProfile(e, href) }, text);
+}
+function openProfile(e, href) {
+  e.stopPropagation();
+  if (web || !href.startsWith("https:") || !tg.openTelegramLink) return;
+  e.preventDefault();
+  tg.openTelegramLink(href);
+}
+const rich = (s, ...v) => s.flatMap((x, i) => (i < v.length ? [x, v[i]] : [x])).flat(Infinity);
+const joined = (xs) => xs.flatMap((x, i) => (i ? [", ", x] : [x]));
 const isMe = (p) => !!p && p.id === S.me.id;
 const mname = (m) => `${S.types[m.t].name} ${m.n}`;
+const bagName = (b) => b.t ? `Пакет на ${S.types[b.t].prep} ${b.n}` : "Пакет на гладильной доске";
 const clock = (ts) => new Intl.DateTimeFormat("ru-RU", { timeZone: S.tz, hour: "2-digit", minute: "2-digit" }).format(new Date(ts * 1000));
-const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+function cap(s) {
+  if (!Array.isArray(s)) return s.charAt(0).toUpperCase() + s.slice(1);
+  const i = s.findIndex((x) => x !== "");
+  return i < 0 || typeof s[i] !== "string" ? s : [...s.slice(0, i), cap(s[i]), ...s.slice(i + 1)];
+}
 const when = (ts) => (ts >= S.tomorrow ? "завтра " : "") + clock(ts);
 
 function minutesLeft(ts) { return Math.max(0, Math.ceil((ts - now()) / 60)); }
@@ -688,15 +707,15 @@ const ownerOf = (m) => (m.owner.id === 0 ? "хозяин неизвестен" :
 
 function statusText(m) {
   if (m.status === "broken") return "сломана" + (m.note ? `: ${m.note}` : "");
-  const booked = m.booking ? `, бронь на ${when(m.booking.at)}: ${who(m.booking.user)}` : "";
-  if (m.status === "run") return `${ownerOf(m)}, ${left(m.ends)}` + (m.next ? `, следующий: ${who(m.next)}` : "") + booked;
-  if (m.status === "hold") return `придержана для ${who(m.owner)} до ${clock(m.ends)}` + booked;
-  const things = m.owner && m.owner.id !== 0 ? `вещи ${who(m.owner)}` : "чьи-то вещи";
-  const after = (m.next ? `, следующий: ${who(m.next)}` : "") + booked;
-  if (m.status === "done") return `закончила${m.finished ? " в " + clock(m.finished) : ""}, внутри ${things}` + after;
-  if (m.status === "parked") return `занята: лежат переложенные ${things}` + after;
-  if (m.status === "loaded") return `занята: внутри ${things}, программа не запущена` + after;
-  return "свободна" + booked;
+  const booked = m.booking ? rich`, бронь на ${when(m.booking.at)}: ${who(m.booking.user)}` : "";
+  const after = rich`${m.next ? rich`, следующий: ${who(m.next)}` : ""}${booked}`;
+  if (m.status === "run") return rich`${ownerOf(m)}, ${left(m.ends)}${after}`;
+  if (m.status === "hold") return rich`придержана для ${who(m.owner)} до ${clock(m.ends)}${booked}`;
+  const things = m.owner && m.owner.id !== 0 ? rich`вещи ${who(m.owner)}` : "чьи-то вещи";
+  if (m.status === "done") return rich`закончила${m.finished ? " в " + clock(m.finished) : ""}, внутри ${things}${after}`;
+  if (m.status === "parked") return rich`занята: лежат переложенные ${things}${after}`;
+  if (m.status === "loaded") return rich`занята: внутри ${things}, программа не запущена${after}`;
+  return rich`свободна${booked}`;
 }
 
 function tile(m) {
@@ -718,7 +737,7 @@ function gridCard() {
   const lines = S.machines
     .filter((m) => m.t === tab && m.status !== "free")
     .map((m) => el("div", { class: "line", onclick: () => openMachine(m) },
-      el("span", { class: "dot " + m.status }), `${mname(m)} — ${statusText(m)}`));
+      el("span", { class: "dot " + m.status }), rich`${mname(m)} — ${statusText(m)}`));
   return el("section", { class: "card" },
     walls,
     el("div", { class: "legend hint" },
@@ -740,27 +759,30 @@ function openMachine(m) {
   const leftover = LEFTOVER.includes(m.status);
   if (m.status === "broken") {
     openSheet(mname(m), [
-      el("p", {}, cap(statusText(m)) + "."),
-      el("p", { class: "hint" }, `Админ отметил её неисправной${m.reporter ? ` (${who(m.reporter)})` : ""}. Занять или забронировать её нельзя, пока не починят.`),
+      el("p", {}, cap(statusText(m)), "."),
+      el("p", { class: "hint" }, rich`Админ отметил её неисправной${m.reporter ? rich` (${who(m.reporter)})` : ""}. Занять или забронировать её нельзя, пока не починят.`),
       admin ? btn("Починили — снова работает", () => act({ action: "fixed", t: m.t, n: m.n })) : null,
     ]);
     return;
   }
-  const body = [el("p", {}, cap(statusText(m)) + (m.status === "run" ? ` (до ${clock(m.ends)})` : "") + ".")];
+  const body = [el("p", {}, cap(statusText(m)), m.status === "run" ? ` (до ${clock(m.ends)})` : "", ".")];
+  for (const x of S.moved.filter((x) => x.bag && x.bag.t === m.t && x.bag.n === m.n)) {
+    body.push(el("p", { class: "hint" }, rich`Сверху лежит пакет с вещами ${who(x.owner)} из ${S.types[x.from.t].gen} ${x.from.n}.`));
+  }
   if (m.status === "parked") {
-    const by = !m.reporter ? "" : marked ? " (переложено тобой)" : ` (кто: ${who(m.reporter)})`;
-    body.push(el("p", { class: "hint" }, `Вещи переложены сюда${by}. Таймер не идёт — машина занята, пока вещи не заберут.`));
+    const by = !m.reporter ? "" : marked ? " (переложено тобой)" : rich` (кто: ${who(m.reporter)})`;
+    body.push(el("p", { class: "hint" }, rich`Вещи переложены сюда${by}. Таймер не идёт — машина занята, пока вещи не заберут.`));
   }
   else if (m.status === "loaded") {
-    const by = !m.reporter ? "" : marked ? " (отметил ты)" : ` (отметил: ${who(m.reporter)})`;
-    body.push(el("p", { class: "hint" }, `Внутри лежат вещи, программа не запущена${by}. Таймер не идёт — машина занята, пока вещи не заберут. Отметка снимется сама через ${S.clothesHours} ч.`));
+    const by = !m.reporter ? "" : marked ? " (отметил ты)" : rich` (отметил: ${who(m.reporter)})`;
+    body.push(el("p", { class: "hint" }, rich`Внутри лежат вещи, программа не запущена${by}. Таймер не идёт — машина занята, пока вещи не заберут. Отметка снимется сама через ${S.clothesHours} ч.`));
   }
   else if (m.reporter) {
-    const by = marked ? "отметил ты" : `отметил: ${who(m.reporter)}`;
-    body.push(el("p", { class: "hint" }, m.owner.id ? `Хозяин нашёлся сам (${by}).` : `Чьи вещи — неизвестно (${by}).`));
+    const by = marked ? "отметил ты" : rich`отметил: ${who(m.reporter)}`;
+    body.push(el("p", { class: "hint" }, m.owner.id ? rich`Хозяин нашёлся сам (${by}).` : rich`Чьи вещи — неизвестно (${by}).`));
   }
   if (m.status === "run" && m.planned && clock(m.planned) !== clock(m.ends)) {
-    body.push(el("p", { class: "hint" }, `Время исправляли по дисплею${m.editor ? `, последний раз — ${isMe(m.editor) ? "ты" : who(m.editor)}` : ""}. Изначально было до ${clock(m.planned)}.`));
+    body.push(el("p", { class: "hint" }, rich`Время исправляли по дисплею${m.editor ? rich`, последний раз — ${isMe(m.editor) ? "ты" : who(m.editor)}` : ""}. Изначально было до ${clock(m.planned)}.`));
   }
   if (m.booking && isMe(m.booking.user)) {
     body.push(el("p", { class: "hint" }, `Это твоя бронь на ${when(m.booking.at)}. В это время машина будет ждать тебя ${S.claim} мин. Если её уже заняли без бота — займи любую свободную.`));
@@ -894,8 +916,9 @@ function openBroken(m) {
 
 function openMove(m) {
   const body = [
-    el("p", {}, `Куда переложены вещи${m.owner.id ? " (" + who(m.owner) + ")" : ""} из ${S.types[m.t].gen} ${m.n}?`),
+    el("p", {}, rich`Куда переложены вещи${m.owner.id ? rich` (${who(m.owner)})` : ""} из ${S.types[m.t].gen} ${m.n}?`),
     btn(S.ironing, () => act({ action: "move", ft: m.t, fn: m.n, to: "board" }), "secondary"),
+    btn("В пакет", () => openBag(m), "secondary"),
   ];
   for (const t of Object.keys(S.types)) {
     const free = S.machines.filter((x) => x.t === t && x.status === "free" && !(x.t === m.t && x.n === m.n));
@@ -905,6 +928,20 @@ function openMove(m) {
         el("button", { class: "chip", onclick: () => act({ action: "move", ft: m.t, fn: m.n, to: "machine", tt: x.t, tn: x.n }) }, x.n))));
   }
   openSheet("Вещи переложены", body);
+}
+
+function openBag(m) {
+  const body = [
+    el("p", {}, `Где лежит пакет с вещами из ${S.types[m.t].gen} ${m.n}?`),
+    btn("На гладильной доске", () => act({ action: "move", ft: m.t, fn: m.n, to: "bag" }), "secondary"),
+  ];
+  for (const t of Object.keys(S.types)) {
+    body.push(el("div", { class: "label" }, `На ${S.types[t].prep}`),
+      el("div", { class: "chips six" }, S.machines.filter((x) => x.t === t).map((x) =>
+        el("button", { class: "chip", onclick: () => act({ action: "move", ft: m.t, fn: m.n, to: "bag", tt: x.t, tn: x.n }) }, x.n))));
+  }
+  body.push(btn("← Назад", () => openMove(m), "secondary"));
+  openSheet("Вещи в пакете", body);
 }
 
 function bookable(t, at) {
@@ -961,9 +998,9 @@ function typeCard() {
   if (booking) parts.push(el("p", { class: "label" }, `Твоя бронь: ${cfg.acc}${booking.n ? " " + booking.n : ""} в ${when(booking.at)}.`), btn("Отменить бронь", () => act({ action: "unbook", id: booking.id }), "secondary"));
   else if (calm) parts.push(el("button", { class: "x", style: "padding:4px 0", onclick: () => openSlots(t) }, "Нужна позже? Забронировать на время"));
   else parts.push(btn("Забронировать на время", () => openSlots(t), "secondary"));
-  if (queue.length) parts.push(el("p", { class: "hint", style: "margin-top:10px" }, "Очередь: " + queue.map(who).join(", ")));
+  if (queue.length) parts.push(el("p", { class: "hint", style: "margin-top:10px" }, "Очередь: ", joined(queue.map(who))));
   const books = S.bookings.filter((b) => b.t === t);
-  if (books.length) parts.push(el("p", { class: "hint" }, "Брони: " + books.map((b) => `${when(b.at)}${b.n ? " №" + b.n : ""} ${who(b.user)}`).join(", ")));
+  if (books.length) parts.push(el("p", { class: "hint" }, "Брони: ", joined(books.map((b) => rich`${when(b.at)}${b.n ? " №" + b.n : ""} ${who(b.user)}`))));
   parts.push(el("p", { class: "hint", style: "margin:10px 0 0" }, "Нажми на занятую машину, чтобы забронировать её сразу после программы. Бронь и очередь работают только между теми, кто пользуется ботом: машину, которую уже заняли вживую, они не отменяют."));
   return el("section", { class: "card" }, el("h2", {}, "Очередь и бронь"), parts);
 }
@@ -1140,8 +1177,8 @@ function mineCard() {
   const line = (m) => {
     if (isMe(m.next)) return `${mname(m)} — забронирована за тобой после программы`;
     if (m.booking && isMe(m.booking.user) && !isMe(m.owner)) return `${mname(m)} — твоя бронь на ${when(m.booking.at)}`;
-    if (isMe(m.reporter)) return `${mname(m)} — отмечена тобой: ${statusText(m)}`;
-    return `${mname(m)} — ${statusText(m)}`;
+    if (isMe(m.reporter)) return rich`${mname(m)} — отмечена тобой: ${statusText(m)}`;
+    return rich`${mname(m)} — ${statusText(m)}`;
   };
   return el("section", { class: "card" }, el("h2", {}, "Мои машины"),
     mine.map((m) => el("div", { class: "line", onclick: () => openMachine(m) }, el("span", { class: "dot " + m.status }), line(m))));
@@ -1253,7 +1290,7 @@ function honorBody(h) {
     h.board.categories.map((c) => el("div", { class: "item" },
       el("b", {}, c.title),
       c.people.length
-        ? c.people.map((p) => el("div", { class: "row" }, el(p.me ? "b" : "span", {}, `${p.place}. ${who(p.user)}`), el("span", { class: "hint" }, p.value)))
+        ? c.people.map((p) => el("div", { class: "row" }, el(p.me ? "b" : "span", {}, rich`${p.place}. ${who(p.user)}`), el("span", { class: "hint" }, p.value)))
         : el("div", { class: "hint" }, "На этой неделе здесь пока пусто."))),
     el("p", { class: "hint", style: "margin:12px 0 0" },
       `Неделя считается с понедельника. Отметки, которые сняли в течение ${h.revert} минут, не считаются. Не хочешь на доску — включи «Не показывать моё имя».`),
@@ -1313,13 +1350,13 @@ function movedCard() {
   if (!S.moved.length) return null;
   return el("section", { class: "card" }, el("h2", {}, "Переложенные вещи"),
     S.moved.map((x) => {
-      const dest = x.to ? `${S.types[x.to.t].name} ${x.to.n}` : S.ironing;
+      const dest = x.to ? `${S.types[x.to.t].name} ${x.to.n}` : x.bag ? bagName(x.bag) : S.ironing;
       const canPick = isMe(x.owner) || x.byMe || S.me.admin;
       return el("div", { class: "item" },
         el("div", { class: "row" },
           el("div", {},
-            el("div", {}, `${dest}: вещи ${who(x.owner)}`),
-            el("div", { class: "hint" }, `из ${S.types[x.from.t].gen} ${x.from.n}, в ${clock(x.at)}` + (x.byMe ? ", переложено тобой" : x.mover ? `, переложено: ${who(x.mover)}` : ""))),
+            el("div", {}, rich`${dest}: вещи ${who(x.owner)}`),
+            el("div", { class: "hint" }, `из ${S.types[x.from.t].gen} ${x.from.n}, в ${clock(x.at)}`, x.byMe ? ", переложено тобой" : x.mover ? rich`, переложено: ${who(x.mover)}` : "")),
           canPick ? el("button", { class: "btn small secondary", onclick: () => act({ action: "picked", id: x.id }) }, "Забрали") : null));
     }));
 }
@@ -1335,13 +1372,13 @@ const monthTitle = (ym) => {
   const [y, m] = ym.split("-").map(Number);
   return cap(new Intl.DateTimeFormat("ru-RU", { timeZone: "UTC", month: "long", year: "numeric" }).format(new Date(Date.UTC(y, m - 1, 1)))).replace(/\s*г\.$/, "");
 };
-const roomWho = (b) => `${who(b.user)}${b.reason ? " — " + b.reason : ""}`;
+const roomWho = (b) => rich`${who(b.user)}${b.reason ? " — " + b.reason : ""}`;
 const roomDayOf = (ts) => R().days.find((d) => ts < d.end);
 const roomFull = (b) => b.capacity !== null && b.going.length >= b.capacity;
 const roomGoing = (b) => {
-  const names = b.going.map(who).join(", ");
-  if (b.capacity === null) return `${b.going.length ? `Идут: ${names}` : "Пока никто не записался"} · без ограничения по числу людей`;
-  return `Идут ${b.going.length} из ${b.capacity}${names ? `: ${names}` : ""}${roomFull(b) ? " · мест нет" : ""}`;
+  const names = joined(b.going.map(who));
+  if (b.capacity === null) return rich`${b.going.length ? rich`Идут: ${names}` : "Пока никто не записался"} · без ограничения по числу людей`;
+  return rich`Идут ${b.going.length} из ${b.capacity}${names.length ? rich`: ${names}` : ""}${roomFull(b) ? " · мест нет" : ""}`;
 };
 
 function roomActs(b) {
@@ -1373,7 +1410,7 @@ function roomGuests(b) {
   if (b.joined) lines.push("Организатор принял твою заявку — ты в списке.");
   else if (b.requested === "pending") lines.push("Заявка отправлена — ждём ответа организатора.");
   else if (b.requested === "declined") lines.push("Организатор отказал в заявке.");
-  if (b.going.length) lines.push(`Гости: ${b.going.map(who).join(", ")}`);
+  if (b.going.length) lines.push(rich`Гости: ${joined(b.going.map(who))}`);
   if (b.requests.length) lines.push(`Ждут ответа: ${b.requests.length} — заявки вверху.`);
   return lines.map((t) => el("div", { class: "hint" }, t));
 }
@@ -1419,8 +1456,8 @@ function roomStatusCard() {
   const next = R().bookings.find((b) => b.starts > now());
   const text = cur
     ? cur.public
-      ? `Сейчас идёт открытое событие до ${when(cur.ends)}: ${roomWho(cur)}. Можно присоединиться!`
-      : `Сейчас занята до ${when(cur.ends)}: ${roomWho(cur)}.`
+      ? rich`Сейчас идёт открытое событие до ${when(cur.ends)}: ${roomWho(cur)}. Можно присоединиться!`
+      : rich`Сейчас занята до ${when(cur.ends)}: ${roomWho(cur)}.`
     : `Сейчас свободна.${next ? ` Следующая бронь — ${dayTitle(roomDayOf(next.starts))}, ${clock(next.starts)}.` : ""}`;
   return el("section", { class: "card" }, el("p", { style: "margin:0" }, el("span", { class: "dot " + (cur ? (cur.public ? "free" : "busy") : "free"), style: "display:inline-block;margin-right:8px" }), text));
 }

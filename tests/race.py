@@ -81,5 +81,23 @@ assert one("SELECT kind FROM machines WHERE chat_id = ? AND mtype = 'd' AND num 
 st, d = api(GALYA, {"action": "picked", "id": mv["id"]}); assert st == 200, d
 assert m(d, "d", 1)["status"] == "free", m(d, "d", 1)
 assert one("SELECT COUNT(*) FROM moved WHERE chat_id = ?", CH) == 0
+print("--- вещи в пакете на машине: исходная освобождается, машина с пакетом остаётся свободной")
+assert api(GALYA, {"action": "take", "t": "w", "n": 4, "time": "40"})[0] == 200
+sql("UPDATE machines SET ends_at = ? WHERE chat_id = ? AND mtype = 'w' AND num = 4", time.time() - 1, CH); cron()
+st, d = api(ANYA, {"action": "move", "ft": "w", "fn": 4, "to": "bag", "tt": "x", "tn": 3}); assert "Некорректный" in err(d), d
+before = len(sent())
+st, d = api(ANYA, {"action": "move", "ft": "w", "fn": 4, "to": "bag", "tt": "d", "tn": 3}); assert st == 200, d
+assert m(d, "w", 4)["status"] == "free" and m(d, "d", 3)["status"] == "free", (m(d, "w", 4), m(d, "d", 3))
+mv = d["moved"][0]; assert mv["to"] is None and mv["bag"] == {"t": "d", "n": 3} and mv["byMe"], mv
+assert [x for x in sent()[before:] if x["chat_id"] == 4 and "в пакет на сушилке 3" in x["text"]], sent()[before:]
+assert api(VOVA, {"action": "take", "t": "d", "n": 3, "time": "40"})[0] == 200
+st, d = api(GALYA, {"action": "picked", "id": mv["id"]}); assert st == 200 and not d["moved"], d
+assert m(d, "d", 3)["status"] == "run", m(d, "d", 3)
+print("--- вещи в пакете на гладильной доске")
+assert api(GALYA, {"action": "take", "t": "w", "n": 4, "time": "40"})[0] == 200
+sql("UPDATE machines SET ends_at = ? WHERE chat_id = ? AND mtype = 'w' AND num = 4", time.time() - 1, CH); cron()
+st, d = api(ANYA, {"action": "move", "ft": "w", "fn": 4, "to": "bag"}); assert st == 200, d
+mv = d["moved"][0]; assert mv["to"] is None and mv["bag"] == {"t": None, "n": None}, mv
+assert one("SELECT bag FROM moved WHERE id = ?", mv["id"]) == 1
 wipe()
 print("RACE TESTS OK")

@@ -27,7 +27,7 @@ const AUTH_CACHE_SECONDS = 300;
 const AUTH_CACHE_MAX = 200;
 const SWEEP_SECONDS = 600;
 const RECENT_SECONDS = 120;
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 const ROOM_USER_BOOKINGS = 3;
 const INIT_DATA_MAX = 4096;
 const API_BODY_MAX = 8 * 1024;
@@ -224,6 +224,7 @@ const SCHEMA = [
     id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL,
     owner_id INTEGER NOT NULL, owner_name TEXT NOT NULL, owner_username TEXT,
     from_mtype TEXT NOT NULL, from_num INTEGER NOT NULL, to_mtype TEXT, to_num INTEGER,
+    bag INTEGER NOT NULL DEFAULT 0, bag_mtype TEXT, bag_num INTEGER,
     mover_id INTEGER NOT NULL, mover_name TEXT NOT NULL, mover_username TEXT, at REAL NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS people (
     chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, name TEXT NOT NULL, username TEXT,
@@ -294,6 +295,9 @@ const MIGRATIONS = [
   "ALTER TABLE people ADD COLUMN digest INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE people ADD COLUMN digest_asked INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE people ADD COLUMN digest_day TEXT",
+  "ALTER TABLE moved ADD COLUMN bag INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE moved ADD COLUMN bag_mtype TEXT",
+  "ALTER TABLE moved ADD COLUMN bag_num INTEGER",
 ];
 
 const NUMBERS = WALLS.flat();
@@ -627,6 +631,16 @@ function tag(p) {
 
 function mname(mtype, num) {
   return `${MACHINES[mtype].name} ${num}`;
+}
+
+function bagPlace(mtype, num) {
+  return mtype ? `в пакет на ${MACHINES[mtype].prep} ${num}` : "в пакет на гладильной доске";
+}
+
+function movedTo(r) {
+  if (r.to_mtype) return mname(r.to_mtype, r.to_num);
+  if (r.bag) return r.bag_mtype ? `пакет на ${MACHINES[r.bag_mtype].prep} ${r.bag_num}` : "пакет на гладильной доске";
+  return "гладильная доска";
 }
 
 function clock(env, ts) {
@@ -1240,7 +1254,9 @@ async function laundryStatus(env, chatId, userId) {
     for (const r of nextRows.filter((r) => r.mtype === mtype)) mine.push(`Бронь после программы: ${mname(mtype, r.num)}`);
     for (const b of bookingRows.filter((b) => b.mtype === mtype)) mine.push(`Бронь на ${cfg.acc}${b.num ? " " + b.num : ""}: ${until(b.at)}`);
   }
-  for (const r of movedRows) mine.push(`Твои вещи из ${MACHINES[r.from_mtype].gen} ${r.from_num} переложили на гладильную доску`);
+  for (const r of movedRows) {
+    mine.push(`Твои вещи из ${MACHINES[r.from_mtype].gen} ${r.from_num} переложили ${r.bag ? bagPlace(r.bag_mtype, r.bag_num) : "на гладильную доску"}`);
+  }
   return (
     `<b>Прачечная</b> · ${clock(env, t)}\n\n` +
     sections.join("\n\n") +
@@ -2298,6 +2314,7 @@ async function state(env, chatId, me, admin, section = "laundry") {
     byMe: r.mover_id === me.id,
     from: { t: r.from_mtype, n: r.from_num },
     to: r.to_mtype ? { t: r.to_mtype, n: r.to_num } : null,
+    bag: r.bag ? { t: r.bag_mtype, n: r.bag_num } : null,
     at: r.at,
   }));
   const boards = new Set(boardRows.map((r) => r.s));
@@ -2832,6 +2849,8 @@ const ACTIONS = {
   async move(env, chatId, me, admin, body, trail) {
     const src = machineArg(body, "f");
     const dest = body.to === "machine" ? machineArg(body, "t") : null;
+    const bag = body.to === "bag";
+    const shelf = bag && body.tt != null ? machineArg(body, "t") : null;
     const row = await getMachine(env, chatId, ...src);
     if (!row || !LEFTOVER.has(row.kind)) return "В этой машине нет оставленных вещей.";
     if (dest) {
@@ -2841,7 +2860,7 @@ const ACTIONS = {
     const ownerP = person(row);
     const since = row.kind === "done" ? row.finished_at : row.started_at;
     Object.assign(trail, machineTrail(row));
-    trail.details.to = dest ? mname(...dest) : "гладильная доска";
+    trail.details.to = movedTo({ to_mtype: dest?.[0], to_num: dest?.[1], bag, bag_mtype: shelf?.[0], bag_num: shelf?.[1] });
     trail.details.waited_min = since ? Math.round((now() - since) / 60) : null;
     if (dest && !(await occupy(env, chatId, ...dest, ownerP, now(), now() + CLOTHES_HOURS * 3600, "parked", me))) {
       return `${mname(...dest)} занята.`;
@@ -2852,12 +2871,15 @@ const ACTIONS = {
     }
     await env.DB.prepare("DELETE FROM moved WHERE chat_id = ? AND to_mtype = ? AND to_num = ?").bind(chatId, ...src).run();
     await env.DB.prepare(
-      "INSERT INTO moved (chat_id, owner_id, owner_name, owner_username, from_mtype, from_num, to_mtype, to_num, mover_id, mover_name, mover_username, at) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).bind(chatId, ownerP.id, ownerP.name, ownerP.username ?? null, ...src, dest ? dest[0] : null, dest ? dest[1] : null, me.id, me.name, me.username ?? null, now()).run();
-    const where = dest ? `в ${capitalize(MACHINES[dest[0]].acc)} ${dest[1]}` : "на гладильную доску";
+      "INSERT INTO moved (chat_id, owner_id, owner_name, owner_username, from_mtype, from_num, to_mtype, to_num, bag, bag_mtype, bag_num, mover_id, mover_name, mover_username, at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).bind(
+      chatId, ownerP.id, ownerP.name, ownerP.username ?? null, ...src, dest ? dest[0] : null, dest ? dest[1] : null,
+      bag ? 1 : 0, shelf ? shelf[0] : null, shelf ? shelf[1] : null, me.id, me.name, me.username ?? null, now()
+    ).run();
+    const where = dest ? `в ${capitalize(MACHINES[dest[0]].acc)} ${dest[1]}` : bag ? bagPlace(...(shelf ?? [])) : "на гладильную доску";
     if (row.kind === "done") {
-      const place = dest ? `в ${MACHINES[dest[0]].acc} ${dest[1]}` : "на гладильную доску";
+      const place = dest ? `в ${MACHINES[dest[0]].acc} ${dest[1]}` : bag ? bagPlace(...(shelf ?? [])) : "на гладильную доску";
       await settleChat(env, row, `Вещи из ${MACHINES[src[0]].gen.toLowerCase()} ${src[1]} переложили ${place}. Хозяин, они там.`);
     }
     if (ownerP.id && ownerP.id !== me.id) {
@@ -2878,7 +2900,7 @@ const ACTIONS = {
     if (!item) return null;
     Object.assign(trail, {
       mtype: item.from_mtype, num: item.from_num, owner: item.owner_id ? person(item, "owner") : null,
-      details: { mover: person(item, "mover"), moved_at: item.at, to: item.to_mtype ? mname(item.to_mtype, item.to_num) : "гладильная доска" },
+      details: { mover: person(item, "mover"), moved_at: item.at, to: movedTo(item) },
     });
     if (me.id !== item.owner_id && me.id !== item.mover_id && !admin) return "Отметить может хозяин вещей, тот, кто их переложил, или админ.";
     await env.DB.prepare("DELETE FROM moved WHERE id = ?").bind(item.id).run();
