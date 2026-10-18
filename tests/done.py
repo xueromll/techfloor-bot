@@ -59,6 +59,15 @@ assert keys(last[warns[8]]) == [f"lc:{CH}:w:8:" + keys(last[warns[8]])[0].split(
 st, d = api(GALYA, {"action": "move", "ft": "w", "fn": 8, "to": "board"}); assert st == 200, d
 assert len([x for x in sent()[before:] if x["chat_id"] == CH]) == 2, sent()[before:]
 moved = [x for x in edits() if x["message_id"] == warns[8]][-1]; assert "переложили" in moved["text"] and not moved["markup"], moved
+print("--- короткая программа (≤ 15 мин) без хозяина: предупреждения не было, но «закончила» всё равно приходит в чат")
+api(BORYA, {"action": "take", "t": "w", "n": 9, "time": "10", "owner": "unknown"})
+before = len(sent()); cron()
+assert not [x for x in sent()[before:] if x["chat_id"] == CH], sent()[before:]
+sql("UPDATE machines SET ends_at = ? WHERE mtype='w' AND num = 9", time.time() - 1); cron()
+said = [x for x in sent()[before:] if x["chat_id"] == CH]
+assert len(said) == 1 and "Стиралка 9 закончила" in said[0]["text"] and "Хозяин вещей не отмечен" in said[0]["text"], said
+assert len(keys(said[0])) == 1 and keys(said[0])[0].startswith(f"lc:{CH}:w:9:"), said
+assert one("SELECT warn_msg FROM machines WHERE mtype = 'w' AND num = 9") == said[0]["message_id"], said
 print("--- «Это мои вещи» под сообщением без хозяина: нажал — стал хозяином, кнопка пропала")
 wipe("machines")
 api(BORYA, {"action": "take", "t": "w", "n": 9, "time": "40", "owner": "unknown"})

@@ -1047,7 +1047,7 @@ async function tickLaundry(env, t, chatId) {
       await audit(env, row.chat_id, "finished", null, machineTrail(row));
       const name = mname(row.mtype, row.num);
       const dm = await notice(env, row.chat_id, person(row), `${name} закончила — забери бельё.`, pickupButtons(row));
-      if (row.warn_msg || (row.user_id && !dm)) {
+      if (row.warn_msg || !dm) {
         const text = !row.user_id
           ? `${name} закончила. Хозяин вещей не отмечен — если это твои вещи, забери их.`
           : dm ? `${name} закончила.` : await closedDmText(env, row, `${name} закончила.`, "забери, пожалуйста, вещи.");
