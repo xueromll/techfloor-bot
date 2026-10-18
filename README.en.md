@@ -21,12 +21,12 @@ The bot reminds you to pick up your clothes, calls you when your turn in the que
   <tr>
     <td align="center"><img src="assets/08-after-guide.png" width="240" alt="Washer board"/></td>
     <td align="center"><img src="assets/06-take-form.png" width="240" alt="Taking a machine"/></td>
-    <td align="center"><img src="assets/10-guide-colors-dark.png" width="240" alt="Status colors, dark theme"/></td>
+    <td align="center"><img src="assets/16-board-dark.png" width="240" alt="Machine board, dark theme"/></td>
   </tr>
   <tr>
     <td align="center"><sub>Machine board</sub></td>
     <td align="center"><sub>Taking a machine</sub></td>
-    <td align="center"><sub>Status colors, dark theme</sub></td>
+    <td align="center"><sub>Dark theme</sub></td>
   </tr>
 </table>
 
@@ -74,9 +74,21 @@ The bot reminds you to pick up your clothes, calls you when your turn in the que
     <td><img src="assets/09-take-form-name-hidden.png" width="200" alt="Form, name hidden"/></td>
     <td><img src="assets/10-guide-colors-dark.png" width="200" alt="Colors, dark theme"/></td>
   </tr>
+  <tr>
+    <td><img src="assets/11-machine-running.png" width="200" alt="Running machine"/></td>
+    <td><img src="assets/12-retime.png" width="200" alt="Time correction"/></td>
+    <td><img src="assets/13-move.png" width="200" alt="Where the clothes were moved"/></td>
+    <td><img src="assets/14-cards.png" width="200" alt="My machines, queue, moved clothes"/></td>
+  </tr>
+  <tr>
+    <td><img src="assets/15-honor.png" width="200" alt="Hall of fame"/></td>
+    <td><img src="assets/08-after-guide.png" width="200" alt="Machine board"/></td>
+    <td><img src="assets/06-take-form.png" width="200" alt="Taking a machine"/></td>
+    <td><img src="assets/16-board-dark.png" width="200" alt="Machine board, dark theme"/></td>
+  </tr>
 </table>
 
-**Playroom** *(archived)*
+**Playroom** *(archived; screenshots from when it was switched on)*
 
 <table>
   <tr>

@@ -21,12 +21,12 @@
   <tr>
     <td align="center"><img src="assets/08-after-guide.png" width="240" alt="Доска стиралок"/></td>
     <td align="center"><img src="assets/06-take-form.png" width="240" alt="Как занять машину"/></td>
-    <td align="center"><img src="assets/10-guide-colors-dark.png" width="240" alt="Что значат цвета, тёмная тема"/></td>
+    <td align="center"><img src="assets/16-board-dark.png" width="240" alt="Доска машин, тёмная тема"/></td>
   </tr>
   <tr>
     <td align="center"><sub>Доска машин</sub></td>
     <td align="center"><sub>Занять машину</sub></td>
-    <td align="center"><sub>Цвета статусов, тёмная тема</sub></td>
+    <td align="center"><sub>Тёмная тема</sub></td>
   </tr>
 </table>
 
@@ -72,9 +72,21 @@
     <td><img src="assets/09-take-form-name-hidden.png" width="200" alt="Форма, имя скрыто"/></td>
     <td><img src="assets/10-guide-colors-dark.png" width="200" alt="Цвета, тёмная тема"/></td>
   </tr>
+  <tr>
+    <td><img src="assets/11-machine-running.png" width="200" alt="Работающая машина"/></td>
+    <td><img src="assets/12-retime.png" width="200" alt="Исправление времени"/></td>
+    <td><img src="assets/13-move.png" width="200" alt="Куда переложены вещи"/></td>
+    <td><img src="assets/14-cards.png" width="200" alt="Мои машины, очередь, переложенные вещи"/></td>
+  </tr>
+  <tr>
+    <td><img src="assets/15-honor.png" width="200" alt="Доска почёта"/></td>
+    <td><img src="assets/08-after-guide.png" width="200" alt="Доска машин"/></td>
+    <td><img src="assets/06-take-form.png" width="200" alt="Занять машину"/></td>
+    <td><img src="assets/16-board-dark.png" width="200" alt="Доска машин, тёмная тема"/></td>
+  </tr>
 </table>
 
-**Игровая** *(в архиве)*
+**Игровая** *(в архиве, скриншоты того времени, когда она была включена)*
 
 <table>
   <tr>
