@@ -2896,7 +2896,7 @@ const ACTIONS = {
       return `Можно поставить от ${lo} до ${hi} мин: сократить время можно сколько угодно, продлить — не больше чем на ${TIMER_SHIFT_MINUTES} мин от изначального конца (было до ${clock(env, planned)}), то есть не позже ${clock(env, limit)}.`;
     }
     const ends = t + minutes * 60;
-    if (Math.round((ends - row.ends_at) / 60) === 0) return `${name} и так закончит в ${clock(env, row.ends_at)}.`;
+    if (Math.floor(ends / 60) === Math.floor(row.ends_at / 60)) return `${name} и так закончит в ${clock(env, row.ends_at)}.`;
     Object.assign(trail, machineTrail(row));
     Object.assign(trail.details, { minutes, new_ends_at: ends, planned_at: planned, editors });
     const ok = await changed(

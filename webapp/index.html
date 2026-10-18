@@ -323,6 +323,17 @@
   .bubble { background: var(--card); border-radius: 12px 12px 12px 4px; padding: 8px 10px; font-size: 14px; }
   .bubble b { display: block; color: var(--accent); font-size: 13px; }
   .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .wheel-box { position: relative; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); overflow: hidden; }
+  .wheel-list { height: 180px; overflow-y: auto; scroll-snap-type: y mandatory; overscroll-behavior: contain; scrollbar-width: none; outline: none; -webkit-mask-image: linear-gradient(transparent, #000 35%, #000 65%, transparent); mask-image: linear-gradient(transparent, #000 35%, #000 65%, transparent); }
+  .wheel-list::-webkit-scrollbar { display: none; }
+  .wheel-pad { height: 72px; }
+  .wheel-item { height: 36px; line-height: 36px; text-align: center; font-size: 18px; color: var(--hint); scroll-snap-align: center; cursor: pointer; user-select: none; }
+  .wheel-item.on { color: var(--text); font-weight: 600; font-size: 20px; }
+  .wheel-band { position: absolute; left: 6px; right: 6px; top: 72px; height: 36px; border-radius: 8px; background: rgba(128, 128, 128, 0.14); pointer-events: none; }
+  .wheel-list:focus-visible + .wheel-band { box-shadow: 0 0 0 2px var(--accent); }
+  .demo .wheel-box { background: var(--card); }
+  .demo .wheel-list { height: 108px; overflow: hidden; }
+  .demo .wheel-band { top: 36px; }
   .total { text-align: center; color: var(--hint); font-size: 13px; margin: 10px 0 0; min-height: 18px; }
   .chip { border: 0; border-radius: 9px; padding: 10px 0; font: inherit; font-weight: 600; background: rgba(128, 128, 128, 0.14); color: var(--text); cursor: pointer; }
   .label { font-size: 13px; color: var(--hint); margin-top: 8px; }
@@ -402,22 +413,68 @@ function durationShort(m) {
   return rest ? `${h}ч${rest}` : `${h} ч`;
 }
 
-function timeFields(onChange, onEnter, minutes = 0) {
-  const hours = el("input", { type: "number", inputmode: "numeric", min: 0, max: Math.floor(S.maxMinutes / 60), step: 1, value: Math.floor(minutes / 60) });
-  const mins = el("input", { type: "number", inputmode: "numeric", min: 0, max: 59, step: 1, value: minutes % 60 });
-  const total = () => Math.max(0, Math.min(S.maxMinutes, (Number(hours.value) || 0) * 60 + (Number(mins.value) || 0)));
-  const set = (v) => {
-    hours.value = Math.floor(v / 60);
-    mins.value = v % 60;
-    onChange();
+const WHEEL_ROW = 36;
+
+function wheel(count, text, onPick, onEnter) {
+  const items = Array.from({ length: count }, (_, i) => el("div", { class: "wheel-item", onclick: () => go(i) }, text(i)));
+  const list = el("div", { class: "wheel-list", tabindex: "0" }, el("div", { class: "wheel-pad" }), items, el("div", { class: "wheel-pad" }));
+  let cur = -1;
+  let target = null;
+  let settle = 0;
+  const mark = (i) => {
+    if (i === cur) return;
+    if (cur >= 0) items[cur].classList.remove("on");
+    cur = i;
+    items[i].classList.add("on");
   };
-  for (const field of [hours, mins]) {
-    field.addEventListener("input", onChange);
-    field.addEventListener("keydown", (e) => { if (e.key === "Enter") onEnter(); });
-  }
+  const clampIndex = (i) => Math.max(0, Math.min(count - 1, i));
+  const go = (i, smooth = true) => {
+    i = clampIndex(i);
+    target = i;
+    mark(i);
+    list.scrollTo({ top: i * WHEEL_ROW, behavior: smooth ? "smooth" : "auto" });
+    onPick();
+  };
+  list.addEventListener("scroll", () => {
+    const i = clampIndex(Math.round(list.scrollTop / WHEEL_ROW));
+    if (target !== null && i !== target) return;
+    target = null;
+    mark(i);
+    clearTimeout(settle);
+    settle = setTimeout(onPick, 60);
+  }, { passive: true });
+  for (const type of ["pointerdown", "wheel"]) list.addEventListener(type, () => { target = null; }, { passive: true });
+  list.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); go(cur + 1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); go(cur - 1); }
+    else if (e.key === "Enter") onEnter();
+  });
+  const box = el("div", { class: "wheel-box" }, list, el("div", { class: "wheel-band" }));
+  return { box, get: () => cur, set: go };
+}
+
+function timeFields(onChange, onEnter, minutes = 0) {
+  const max = S.maxMinutes;
+  let ready = false;
+  const pick = () => {
+    if (!ready) return;
+    if (hours.get() * 60 + mins.get() > max) mins.set(max % 60);
+    else onChange();
+  };
+  const hours = wheel(Math.floor(max / 60) + 1, (i) => `${i} ч`, pick, onEnter);
+  const mins = wheel(60, (i) => `${String(i).padStart(2, "0")} мин`, pick, onEnter);
+  const total = () => Math.min(max, hours.get() * 60 + mins.get());
+  const set = (v, smooth = true) => {
+    v = Math.max(0, Math.min(max, v));
+    hours.set(Math.floor(v / 60), smooth);
+    mins.set(v % 60, smooth);
+  };
+  set(minutes, false);
+  ready = true;
+  requestAnimationFrame(() => set(total(), false));
   const row = el("div", { class: "pair" },
-    el("div", {}, el("label", {}, "часы"), hours),
-    el("div", {}, el("label", {}, "минуты"), mins));
+    el("div", {}, el("label", {}, "часы"), hours.box),
+    el("div", {}, el("label", {}, "минуты"), mins.box));
   return { row, total, set };
 }
 
@@ -639,7 +696,7 @@ function openMachine(m) {
     const by = marked ? "отметил ты" : `отметил: ${who(m.reporter)}`;
     body.push(el("p", { class: "hint" }, m.owner.id ? `Хозяин нашёлся сам (${by}).` : `Чьи вещи — неизвестно (${by}).`));
   }
-  if (m.status === "run" && m.planned) {
+  if (m.status === "run" && m.planned && clock(m.planned) !== clock(m.ends)) {
     body.push(el("p", { class: "hint" }, `Время исправляли по дисплею${m.editor ? `, последний раз — ${isMe(m.editor) ? "ты" : who(m.editor)}` : ""}. Изначально было до ${clock(m.planned)}.`));
   }
   if (m.booking && isMe(m.booking.user)) {
@@ -738,9 +795,10 @@ function openRetime(m) {
   const save = btn("Сохранить время", () => go());
   const sync = () => {
     const t = time.total();
-    const ok = t >= lo && t <= hi;
+    const same = clock(now() + t * 60) === clock(m.ends);
+    const ok = t >= lo && t <= hi && !same;
     save.disabled = !ok;
-    summary.replaceChildren(!t ? "Укажи, сколько осталось по дисплею" : ok ? `До ${clock(now() + t * 60)}` : `Можно от ${duration(lo)} до ${duration(hi)}`);
+    summary.replaceChildren(!t ? "Укажи, сколько осталось по дисплею" : same ? `Так и есть: до ${clock(m.ends)}` : ok ? `До ${clock(now() + t * 60)}` : `Можно от ${duration(lo)} до ${duration(hi)}`);
   };
   const go = () => {
     const t = time.total();
@@ -900,12 +958,13 @@ function openGuide() {
     el("p", { class: "hint" }, "Отмечай машины здесь — тогда все видят, что свободно, и никому не нужно спускаться проверять."),
     guideStep(1, "Запустил стирку — нажми на номер машины", "Зелёные — свободны. Что значат остальные цвета — в конце инструкции.",
       el("div", { class: "wall" }, demoTile("run", 1, "40 мин"), demoTile("free", 2, "свободна"), demoTile("free", 3, "свободна", true), demoTile("done", 4, "готово"))),
-    guideStep(2, "Выбери «Мои вещи» и время с дисплея машины", null, [
+    guideStep(2, "Выбери «Мои вещи» и время с дисплея машины", "Нажми готовый вариант или прокрути часы и минуты до того, что на дисплее, — хватит одного-двух движений.", [
       el("div", { class: "chips two" }, el("div", { class: "chip on" }, "Мои вещи"), el("div", { class: "chip" }, "Не мои, просто отмечаю")),
-      el("div", { class: "chips three" }, [30, 60, 90].map((v) => el("div", { class: v === 60 ? "chip on" : "chip" }, durationShort(v)))),
+      el("div", { class: "chips three" }, [30, 60, 90].map((v) => el("div", { class: "chip" }, durationShort(v)))),
+      demoWheel(85),
       el("div", { class: "btn" }, "Занять: мои вещи")]),
     guideStep(3, "Машина пересчитала время — исправь его", [
-      "Нажми на номер работающей машины, выбери «Время на дисплее другое» и введи, сколько осталось по дисплею.",
+      "Нажми на номер работающей машины, выбери «Время на дисплее другое» и прокрути часы и минуты до того, что на дисплее.",
       `Сократить можно сколько угодно, продлить — не больше чем на ${S.timerShift} мин. Любой может исправить один раз за программу, хозяин — сколько угодно. Хозяину и тем, у кого бронь после, придёт уведомление.`,
     ], [
       el("div", { class: "wall" }, demoTile("run", 3, "55 мин", true)),
@@ -946,6 +1005,17 @@ function demoDays(marks) {
   return el("div", { class: "cal" },
     ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((w) => el("span", { class: "wd" }, w)),
     marks.map((m, i) => el("div", { class: "day" + (m ? " " + m : "") }, 13 + i)));
+}
+
+function demoWheel(minutes) {
+  const col = (label, count, at, text) => el("div", {}, el("label", {}, label),
+    el("div", { class: "wheel-box" },
+      el("div", { class: "wheel-list" }, [at - 1, at, at + 1].map((v) =>
+        el("div", { class: v === at ? "wheel-item on" : "wheel-item" }, v >= 0 && v < count ? text(v) : ""))),
+      el("div", { class: "wheel-band" })));
+  return el("div", { class: "pair" },
+    col("часы", Math.floor(S.maxMinutes / 60) + 1, Math.floor(minutes / 60), (i) => `${i} ч`),
+    col("минуты", 60, minutes % 60, (i) => `${String(i).padStart(2, "0")} мин`));
 }
 
 function demoField(label, value) {

@@ -134,6 +134,12 @@ st, d = api(VOVA, {"action": "retime", "t": "w", "n": 2, "time": "60"}); assert 
 st, d = api(VOVA, {"action": "retime", "t": "w", "n": 2, "time": "50"}); assert "уже исправлял" in err(d), d
 for minutes in ("30", "35"):
     st, d = api(GALYA, {"action": "retime", "t": "w", "n": 2, "time": minutes}); assert st == 200 and m(d, "w", 2)["edits"] == 1, d
+print("--- правка, после которой на экране то же время, не считается правкой")
+st, d = api(BORYA, {"action": "take", "t": "d", "n": 6, "time": "45"}); assert st == 200, d
+if time.time() % 60 > 50: time.sleep(11)
+sql("UPDATE machines SET ends_at = ? WHERE mtype = 'd' AND num = 6", (int(time.time() // 60) + 45) * 60 + 59.5)
+st, d = api(BORYA, {"action": "retime", "t": "d", "n": 6, "time": "45"}); assert "и так закончит" in err(d), d
+st, d = api(BORYA); d6 = m(d, "d", 6); assert d6["planned"] is None and d6["edits"] == 0, d6
 wipe()
 
 print("ALL CF TESTS OK")
