@@ -370,6 +370,7 @@ When someone writes in the group chat instead of using the app, the bot replies 
 - **The hint is deleted** when any chat member opens the app through its button. Telegram does not tell the bot about link-button presses, so the first app request with that link serves as the signal.
 - Hint ids are stored in the `hints` table and dropped after `HINT_HOURS` (48 h). After that Telegram no longer lets the bot delete its own messages, so a hint nobody opened stays in the chat.
 - The bot reacts only to new messages: old and edited ones are not checked.
+- Only messages in the topic where the laundry board sits are checked. In a forum chat, messages in other topics are ignored.
 
 > [!NOTE]
 > To see regular group messages, the bot must be a chat admin (it already is, for pinning) or have privacy mode turned off in @BotFather.

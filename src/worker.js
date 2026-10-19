@@ -1504,9 +1504,11 @@ async function chatHint(env, msg) {
   const kind = Object.keys(HINTS).find((k) => HINTS[k].match(text));
   if (!kind) return;
   const chatId = msg.chat.id;
-  if (!(await first(env, "SELECT 1 AS ok FROM boards WHERE chat_id = ?", chatId)) || spend(env, "hint", `${chatId}:${kind}`)) return;
+  const thread = msg.is_topic_message && msg.message_thread_id ? msg.message_thread_id : null;
+  const board = await first(env, "SELECT thread_id FROM boards WHERE chat_id = ?", chatId);
+  if (!board || (board.thread_id ?? null) !== thread || spend(env, "hint", `${chatId}:${kind}`)) return;
   const res = await say(env, chatId, HINTS[kind].text, {
-    message_thread_id: msg.is_topic_message ? msg.message_thread_id : null,
+    message_thread_id: thread,
     reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
     reply_markup: { inline_keyboard: [[{ text: "Отметить в приложении", url: await appLink(env, chatId, `${kind}${msg.message_id}`) }]] },
   });

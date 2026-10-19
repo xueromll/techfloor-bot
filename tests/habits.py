@@ -169,6 +169,7 @@ assert deleted()[gone:] == [{"chat_id": CH, "message_id": hints[0]["message_id"]
 assert one("SELECT COUNT(*) FROM hints") == 0
 print("--- «5 всё», «закончилась», «постиралась» в чате — своя подсказка; «все заняты» и вопросы её не вызывают")
 before = len(sent())
+post(7010, text="стиралка 5 всё", message_thread_id=55, is_topic_message=True)
 post(7011, text="все заняты")
 post(7012, text="всё?")
 post(7013, text="стиралка 5 всё")
