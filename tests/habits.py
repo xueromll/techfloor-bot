@@ -158,6 +158,9 @@ hints = chat(before)
 assert len(hints) == 1 and hints[0]["text"].startswith("Переложил чужие вещи?"), hints
 url = hints[0]["markup"]["inline_keyboard"][0][0]["url"]
 assert url.endswith(f"?startapp={CH}_m7002"), url
+def hint_events(action): return rows("SELECT actor_id, json_extract(details, '$.kind') AS kind, json_extract(details, '$.source_id') AS src FROM events WHERE action = ? ORDER BY id", action)
+assert [tuple(r) for r in hint_events("hint")][-1:] == [(2, "move", 7002)], hint_events("hint")
+opened = len(hint_events("hint_open"))
 gone = len(deleted())
 st, d = api(init(2, "Боря", None, start=f"{CH}_m7001")); assert st == 200, d
 st, d = api(init(OUTSIDER_UID, "Чужой", None, start=f"{CH}_m7002")); assert st == 403, d
@@ -167,6 +170,7 @@ st, d = api(via); assert st == 200, d
 st, d = api(via); assert st == 200, d
 assert deleted()[gone:] == [{"chat_id": CH, "message_id": hints[0]["message_id"]}], deleted()[gone:]
 assert one("SELECT COUNT(*) FROM hints") == 0
+assert [tuple(r) for r in hint_events("hint_open")[opened:]] == [(3, "move", 7002)], hint_events("hint_open")
 print("--- «5 всё», «закончилась», «постиралась» в чате — своя подсказка; «все заняты» и вопросы её не вызывают")
 before = len(sent())
 post(7010, text="стиралка 5 всё", message_thread_id=55, is_topic_message=True)
@@ -180,4 +184,6 @@ assert hints[0]["markup"]["inline_keyboard"][0][0]["url"].endswith(f"?startapp={
 gone = len(deleted())
 st, d = api(init(2, "Боря", None, start=f"{CH}_f7013")); assert st == 200, d
 assert deleted()[gone:] == [{"chat_id": CH, "message_id": hints[0]["message_id"]}], deleted()[gone:]
+assert [tuple(r) for r in hint_events("hint")][-1:] == [(2, "done", 7013)], hint_events("hint")
+assert [tuple(r) for r in hint_events("hint_open")[opened + 1:]] == [(2, "done", 7013)], hint_events("hint_open")
 print("HABITS TESTS OK")

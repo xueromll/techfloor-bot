@@ -1515,11 +1515,19 @@ async function chatHint(env, msg) {
   if (!res.ok) return;
   await env.DB.prepare("INSERT OR REPLACE INTO hints (chat_id, source_id, message_id, at) VALUES (?, ?, ?, ?)")
     .bind(chatId, msg.message_id, res.result.message_id, now()).run();
+  const from = msg.from;
+  const actor = { id: from.id, name: [from.first_name, from.last_name].filter(Boolean).join(" "), username: from.username };
+  await audit(env, chatId, "hint", actor, { details: { kind: hintKind(kind), source_id: msg.message_id } });
+}
+
+function hintKind(kind) {
+  return kind === "m" ? "move" : kind === "f" ? "done" : kind ?? null;
 }
 
 async function dropHint(env, chatId, sourceId) {
   const row = await first(env, "DELETE FROM hints WHERE chat_id = ? AND source_id = ? RETURNING message_id", chatId, sourceId);
   if (row) await tg(env, "deleteMessage", { chat_id: chatId, message_id: row.message_id });
+  return !!row;
 }
 
 async function problem(env, msg, text) {
@@ -2171,7 +2179,9 @@ async function authorize(request, env, bucket) {
   }
   const { inside, admin } = await membership(env, chatId, user.id);
   if (!inside) throw new ApiError("Приложение доступно только участникам чата.", 403);
-  if (hint) await dropHint(env, chatId, hint);
+  if (hint && await dropHint(env, chatId, hint)) {
+    await audit(env, chatId, "hint_open", user, { details: { kind: hintKind(tab), source_id: hint } });
+  }
   const me = { ...user };
   me.hidden = await remember(env, chatId, me, mine[0]);
   me.digest = !!mine[0]?.digest;
