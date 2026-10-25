@@ -68,6 +68,20 @@ said = [x for x in sent()[before:] if x["chat_id"] == CH]
 assert len(said) == 1 and "Стиралка 9 закончила" in said[0]["text"] and "Хозяин вещей не отмечен" in said[0]["text"], said
 assert len(keys(said[0])) == 1 and keys(said[0])[0].startswith(f"lc:{CH}:w:9:"), said
 assert one("SELECT warn_msg FROM machines WHERE mtype = 'w' AND num = 9") == said[0]["message_id"], said
+print("--- «Вещи забраны» не от хозяина: в чате не «Спасибо!», а кто отметил")
+edited = len(edits())
+st, d = api(VOVA, {"action": "free", "t": "w", "n": 9}); assert st == 200, d
+got = [x for x in edits()[edited:] if x["message_id"] == said[0]["message_id"]]
+assert len(got) == 1 and got[0]["text"] == "Стиралка 9 освободилась. Кто отметил: @vova.", got
+print("--- машину без хозяина заняли новой стиркой: в чате не «Спасибо!», а что вещи вынули и кто отметил")
+api(ANYA, {"action": "take", "t": "w", "n": 9, "time": "10", "owner": "unknown"})
+before = len(sent())
+sql("UPDATE machines SET ends_at = ? WHERE mtype='w' AND num = 9", time.time() - 1); cron()
+said = [x for x in sent()[before:] if x["chat_id"] == CH]; assert len(said) == 1 and "Стиралка 9 закончила" in said[0]["text"], said
+edited = len(edits())
+st, d = api(ANYA, {"action": "take", "t": "w", "n": 9, "time": "40"}); assert m(d, "w", 9)["status"] == "run", d
+got = [x for x in edits()[edited:] if x["message_id"] == said[0]["message_id"]]
+assert len(got) == 1 and got[0]["text"] == "Стиралка 9 снова занята, вещи из неё вынули. Кто отметил: @anya.", got
 print("--- «Это мои вещи» под сообщением без хозяина: нажал — стал хозяином, кнопка пропала")
 wipe("machines")
 api(BORYA, {"action": "take", "t": "w", "n": 9, "time": "40", "owner": "unknown"})

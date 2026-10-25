@@ -2686,7 +2686,11 @@ const ACTIONS = {
     Object.assign(trail, { mtype, num, owner: owner.id ? owner : null, details: { minutes, replaced: row ? machineTrail(row).details : null } });
     if (!(await occupy(env, chatId, mtype, num, owner, t, t + minutes * 60, "run", reporter, replaces))) return `${mname(mtype, num)} уже занята.`;
     await clearOwnerHolds(env, chatId, mtype, num, owner);
-    if (row?.kind === "done") await settleChat(env, row, `${mname(mtype, num)} освободилась. Спасибо!`);
+    if (row?.kind === "done") {
+      await settleChat(env, row, owner.id && row.user_id === owner.id
+        ? `${mname(mtype, num)} освободилась. Спасибо!`
+        : `${mname(mtype, num)} снова занята, вещи из неё вынули. Кто отметил: ${await label(env, chatId, me)}.`);
+    }
     return null;
   },
 
@@ -2741,7 +2745,11 @@ const ACTIONS = {
     if (row.kind === "parked") {
       await env.DB.prepare("DELETE FROM moved WHERE chat_id = ? AND to_mtype = ? AND to_num = ? AND owner_id = ?").bind(chatId, mtype, num, row.user_id).run();
     }
-    if (row.kind === "done") await settleChat(env, row, `${mname(mtype, num)} освободилась. Спасибо!`);
+    if (row.kind === "done") {
+      await settleChat(env, row, row.user_id && row.user_id === me.id
+        ? `${mname(mtype, num)} освободилась. Спасибо!`
+        : `${mname(mtype, num)} освободилась. Кто отметил: ${await label(env, chatId, me)}.`);
+    }
     if (row.user_id && row.user_id !== me.id) {
       const who = await label(env, chatId, me);
       const text = LEFTOVER.has(row.kind)
