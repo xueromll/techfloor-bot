@@ -169,7 +169,7 @@ npm run deploy
 Then:
 
 1. Open **`/setup?key=WEBHOOK_SECRET`** on the worker's address. Without this step Telegram will not deliver button presses. `/setup` registers the webhook and the command menu (including `/login`) and shows the Mini App URL.
-2. In **@BotFather**: `/myapps` → your app → *Edit Web App URL* → `https://…workers.dev/start`.
+2. In **@BotFather**: `/myapps` → your app → *Edit Web App URL* → the address from `/setup`: `https://…apigw.yandexcloud.net/start` (the gateway, see [Working without a VPN](#working-without-a-vpn)) or `https://…workers.dev/start` if there is no gateway.
 3. Make the bot an **admin** of the group chat and send **`/board`** in the laundry topic.
 
 > [!IMPORTANT]
@@ -436,18 +436,18 @@ The free plan includes one such rule (fields limited to Path and Verified Bot, a
 
 **A two-layer fix:**
 
-1. **Yandex Cloud API Gateway** (free up to 100,000 requests a month) sits in front of the worker: it serves `/` and forwards `/api/*` to the worker. The Telegram webhook, cron and the database stay on Cloudflare.
-2. **The `/start` loader** ([`src/start.html`](src/start.html), ~3 KB, under the cut-off threshold). Some VPNs (Estonian ones, for example) can't reach Yandex, so the loader fetches the app page from the worker and the gateway at the same time, shows whichever arrives in full first, and the app then sends all `/api/*` requests to that same place.
+1. **Yandex Cloud API Gateway** (free up to 100,000 requests a month) sits in front of the worker: it serves `/` and `/start` and forwards `/api/*` to the worker. The Telegram webhook, cron and the database stay on Cloudflare.
+2. **The `/start` loader** ([`src/start.html`](src/start.html), ~3 KB). Telegram opens it from the gateway: with some ISPs Cloudflare does not answer at all without a VPN, not even for a small page. The loader fetches the app page from the address it was opened from and from `SITE_URL` at the same time, shows whichever arrives in full first, and the app then sends all `/api/*` requests to that same place.
 
-| Network | Who wins |
+| Network | Where the app loads from |
 |---|---|
 | No VPN | gateway |
-| With a VPN | either |
-| With an Estonian VPN | worker |
+| With a VPN | gateway |
+| With a VPN that can't reach Yandex (Estonian ones, for example) | does not open, turn the VPN off |
 
 **Details:**
-- The Mini App URL for BotFather (*/myapps → your app → Edit Web App URL*) is `https://…workers.dev/start`; `/setup` shows it.
-- The gateway address is stored in `SITE_URL`. `/login` links point to it (the site only talks to its own address because sign-in relies on a cookie), and the loader tries it second.
+- The Mini App URL for BotFather (*/myapps → your app → Edit Web App URL*) is `https://…apigw.yandexcloud.net/start`; `/setup` shows it. With the old `https://…workers.dev/start` address the app does not open where Cloudflare is unreachable altogether.
+- The gateway address is stored in `SITE_URL`. `/login` links point to it (the site only talks to its own address because sign-in relies on a cookie), and the loader fetches the app page from it.
 - Requests from the worker's page to the gateway come from a different origin, so the gateway spec enables CORS for the worker's address.
 - To the worker, every user appears to come from the gateway's IP, so the gateway adds an `X-Relay-Key` header with the `RELAY_KEY` secret. Only with the correct key does the worker take the visitor's IP from the last address in `X-Real-Remote-Address`; the gateway appends it itself, so it can't be forged. Without this, 30 bad requests from one person would lock everyone out.
 - Website sign-in accepts both the worker's Origin and `SITE_URL`. The old `workers.dev` address keeps working with a VPN.
@@ -472,6 +472,11 @@ paths:
       x-yc-apigateway-integration:
         type: http
         url: https://techfloor.lanhua1122333.workers.dev/
+  /start:
+    get:
+      x-yc-apigateway-integration:
+        type: http
+        url: https://techfloor.lanhua1122333.workers.dev/start
   /api/{path+}:
     x-yc-apigateway-any-method:
       parameters:

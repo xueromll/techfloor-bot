@@ -1967,7 +1967,7 @@ async function onSetup(url, env, ip) {
       ? `Разрешённые чаты: ${allowedChats(env).join(", ")}` + (left.length ? `. Вышел из чужих чатов: ${left.join(", ")}` : "")
       : `Разрешённые чаты: не заданы — бота можно добавить в любой чат. Задай ALLOWED_CHATS. Чаты с закрепом сейчас: ${left.join(", ") || "нет"}`,
     await cronStatus(env),
-    `Адрес Mini App для BotFather: ${url.origin}/start`,
+    `Адрес Mini App для BotFather: ${siteOrigin(env, url)}/start`,
     `Сайт: ${env.SITE_URL || url.origin}/ — вход через /login в личке бота`,
   ];
   return respond(lines.join("\n"));
