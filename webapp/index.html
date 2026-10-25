@@ -347,10 +347,16 @@
   .sheet-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
   .x { border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; padding: 4px; }
   .empty { padding: 40px 16px; text-align: center; color: var(--hint); }
+  #undo[hidden] { display: none; }
+  #undo { position: fixed; left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); max-width: 536px; margin: 0 auto; display: flex; align-items: center; gap: 10px; background: var(--text); color: var(--bg); border-radius: 12px; padding: 10px 10px 10px 14px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25); }
+  #undo span { flex: 1; font-size: 14px; }
+  #undo button { border: 0; border-radius: 9px; padding: 8px 12px; font: inherit; font-weight: 600; background: var(--accent); color: var(--accent-text); cursor: pointer; white-space: nowrap; }
+  body.undoing #app { padding-bottom: 88px; }
 </style>
 </head>
 <body>
 <div id="app"><div class="empty" id="boot">Загрузка…</div></div>
+<div id="undo" hidden></div>
 <div id="sheet" hidden></div>
 <script>
 const tg = window.Telegram.WebApp;
@@ -359,6 +365,7 @@ const web = !initData && tg.platform === "unknown";
 const apiBase = window.apiBase || "";
 const app = document.getElementById("app");
 const sheet = document.getElementById("sheet");
+const undoBar = document.getElementById("undo");
 let S = null;
 let tab = "w";
 let section = null;
@@ -370,6 +377,7 @@ let busy = false;
 let loading = false;
 let poll = null;
 let signedOut = false;
+let undoTimer = null;
 
 function el(tag, props, ...children) {
   const node = document.createElement(tag);
@@ -619,6 +627,7 @@ function signIn(note, bot) {
   S = null;
   clearTimeout(poll);
   closeSheet();
+  undoCard();
   app.replaceChildren(el("section", { class: "card" },
     el("h1", { style: "margin:0 0 10px" }, "Техэтаж"),
     note ? el("p", {}, note) : null,
@@ -685,6 +694,17 @@ async function act(body, done) {
   } finally {
     busy = false;
   }
+}
+
+function undoCard() {
+  clearTimeout(undoTimer);
+  const u = S && S.undo;
+  const left = u ? u.until - now() : 0;
+  undoBar.hidden = left <= 0;
+  document.body.classList.toggle("undoing", left > 0);
+  if (left <= 0) return undoBar.replaceChildren();
+  undoBar.replaceChildren(el("span", {}, `${u.text}.`), el("button", { onclick: () => act({ action: "undo" }) }, "Отменить"));
+  undoTimer = setTimeout(undoCard, left * 1000);
 }
 
 function warn(text) {
@@ -1726,6 +1746,7 @@ function render() {
     problemCard(),
     accountCard(),
   ].filter(Boolean));
+  undoCard();
 }
 
 function start() {

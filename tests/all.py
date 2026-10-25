@@ -1,6 +1,6 @@
 import os, socket, subprocess, sys, time
 
-SUITES = ("drive.py", "done.py", "room.py", "auth.py", "race.py", "abuse.py", "web.py", "habits.py")
+SUITES = ("drive.py", "done.py", "room.py", "auth.py", "race.py", "abuse.py", "web.py", "habits.py", "undo.py")
 PORTS = {"faketg.py": 8799, "server.py": 8787}
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}

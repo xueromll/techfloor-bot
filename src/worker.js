@@ -27,7 +27,7 @@ const AUTH_CACHE_SECONDS = 300;
 const AUTH_CACHE_MAX = 200;
 const SWEEP_SECONDS = 600;
 const RECENT_SECONDS = 120;
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 const ROOM_USER_BOOKINGS = 3;
 const INIT_DATA_MAX = 4096;
 const API_BODY_MAX = 8 * 1024;
@@ -55,6 +55,7 @@ const LOGIN_MINUTES = 10;
 const SESSION_DAYS = 30;
 const SESSION_COOKIE = "session";
 const HINT_HOURS = 48;
+const UNDO_SECONDS = 120;
 const MOVE_WORDS = /(?<![а-яё])(перелож|перекин|вытащ|вынул)/i;
 const MOVE_HINT = "Переложил чужие вещи? Отметь это в приложении — хозяин узнает, где их искать.";
 const DONE_WORD = /^(все|всё|закончил[а-яё]*|постирал[а-яё]*)$/;
@@ -235,6 +236,10 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS hints (
     chat_id INTEGER NOT NULL, source_id INTEGER NOT NULL, message_id INTEGER NOT NULL, at REAL NOT NULL,
     PRIMARY KEY (chat_id, source_id))`,
+  `CREATE TABLE IF NOT EXISTS undos (
+    chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, action TEXT NOT NULL, label TEXT NOT NULL,
+    mtype TEXT, num INTEGER, event_id INTEGER, made TEXT NOT NULL, gone TEXT NOT NULL, at REAL NOT NULL,
+    PRIMARY KEY (chat_id, user_id))`,
 ];
 
 const MIGRATIONS = [
@@ -271,14 +276,22 @@ const MIGRATIONS = [
 ];
 
 const NUMBERS = WALLS.flat();
-const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings", "room_joins", "room_requests", "blocks", "events", "sessions", "badges", "hints"];
+const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings", "room_joins", "room_requests", "blocks", "events", "sessions", "badges", "hints", "undos"];
 const UNKNOWN = { id: 0, name: "неизвестно", username: null };
 
 const LEFTOVER = new Set(["done", "parked", "loaded"]);
 const REPLACEABLE = new Set(["hold", "done", "loaded"]);
+const UNDOABLE = new Set(["take", "load", "claim", "free", "move"]);
+const UNDO_KEYS = {
+  machines: ["chat_id", "mtype", "num", "started_at", "kind", "user_id", "ends_at"],
+  nexts: ["chat_id", "mtype", "num", "user_id"],
+  queue: ["id"],
+  bookings: ["id"],
+  moved: ["id"],
+};
 const ROOM_ACTIONS = new Set(["room_book", "room_edit", "room_cancel", "room_join", "room_leave", "room_ask", "room_unask", "room_answer", "admin_reset_room", "privacy"]);
 const PLAYROOM_ONLY = new Set(["room_book", "room_edit", "room_cancel", "room_join", "room_leave", "room_ask", "room_unask", "room_answer", "admin_reset_room"]);
-const LAUNDRY_ONLY = new Set(["take", "load", "claim", "free", "queue", "unqueue", "next", "unnext", "book", "unbook", "move", "picked", "broken", "fixed", "retime", "admin_reset_laundry", "digest"]);
+const LAUNDRY_ONLY = new Set(["take", "load", "claim", "free", "queue", "unqueue", "next", "unnext", "book", "unbook", "move", "picked", "broken", "fixed", "retime", "admin_reset_laundry", "digest", "undo"]);
 const ANNOUNCING = new Set(["room_book", "room_edit", "room_cancel"]);
 const UNPINNED = new Set(["dm", "problem", "digest"]);
 const COMMANDS = ["/start", "/problem", "/status", "/login", "/board", "/playroom", "/unpin", "/block", "/unblock", "/blocked"];
@@ -564,15 +577,17 @@ async function audit(env, chatId, action, actor, trail = {}) {
   };
   console.log(JSON.stringify({ event: entry }));
   try {
-    await env.DB.prepare(
+    const res = await env.DB.prepare(
       "INSERT INTO events (chat_id, at, action, actor_id, actor_name, actor_username, mtype, num, owner_id, owner_name, owner_username, details) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).bind(
       chatId, now(), action, actor?.id ?? null, actor?.name ?? null, actor?.username ?? null, trail.mtype ?? null, trail.num ?? null,
       owner?.id ?? null, owner?.name ?? null, owner?.username ?? null, trail.details ? JSON.stringify(trail.details) : null
     ).run();
+    return res.meta.last_row_id ?? null;
   } catch (e) {
     console.error("Audit failed", e);
+    return null;
   }
 }
 
@@ -1086,6 +1101,7 @@ async function tick(env, chatId = null) {
       env.DB.prepare("DELETE FROM events WHERE at < ?").bind(t - LOG_DAYS * 86400),
       env.DB.prepare("DELETE FROM sessions WHERE expires_at < ?").bind(t),
       env.DB.prepare("DELETE FROM hints WHERE at < ?").bind(t - HINT_HOURS * 3600),
+      env.DB.prepare("DELETE FROM undos WHERE at < ?").bind(t - UNDO_SECONDS),
     ]);
   }
   if (!playroom(env)) return;
@@ -2231,7 +2247,7 @@ async function state(env, chatId, me, admin, section = "laundry") {
   const t = now();
   const rooms = playroom(env);
   const days = rooms ? roomDays(env) : [];
-  const [peopleRows, machineRows, nextRows, bookingRows, queueRows, movedRows, dmRows, boardRows, badgeRows, roomRows = [], joinRows = [], requestRows = []] = await batch(
+  const [peopleRows, machineRows, nextRows, bookingRows, queueRows, movedRows, dmRows, boardRows, badgeRows, undoRows, roomRows = [], joinRows = [], requestRows = []] = await batch(
     env,
     q(env, "SELECT * FROM people WHERE chat_id = ?", chatId),
     q(env, "SELECT * FROM machines WHERE chat_id = ?", chatId),
@@ -2242,6 +2258,7 @@ async function state(env, chatId, me, admin, section = "laundry") {
     q(env, "SELECT ok FROM dm WHERE user_id = ?", me.id),
     q(env, "SELECT 'laundry' AS s FROM boards WHERE chat_id = ? UNION ALL SELECT 'playroom' FROM pboards WHERE chat_id = ?", chatId, chatId),
     q(env, "SELECT MAX(week) AS week FROM badges WHERE chat_id = ? AND user_id = ?", chatId, me.id),
+    q(env, "SELECT * FROM undos WHERE chat_id = ? AND user_id = ? AND at > ?", chatId, me.id, t - UNDO_SECONDS),
     ...(rooms
       ? [
           q(env,
@@ -2320,6 +2337,7 @@ async function state(env, chatId, me, admin, section = "laundry") {
     snooze: SNOOZE_MINUTES,
     digestHour: hourText(digestHour(env)),
     badgeWeek: badgeRows[0]?.week ?? null,
+    undo: undoRows[0] && undoFits(undoRows[0], machineRows) ? { text: undoRows[0].label, until: undoRows[0].at + UNDO_SECONDS } : null,
     machines,
     queue,
     bookings,
@@ -2762,6 +2780,62 @@ const ACTIONS = {
     return null;
   },
 
+  async undo(env, chatId, me, admin, body, trail) {
+    const row = await first(env, "SELECT * FROM undos WHERE chat_id = ? AND user_id = ?", chatId, me.id);
+    if (!row || now() - row.at > UNDO_SECONDS) return `Отменить можно только своё последнее действие и только в первые ${UNDO_SECONDS / 60} мин.`;
+    const made = JSON.parse(row.made);
+    const gone = JSON.parse(row.gone);
+    Object.assign(trail, { mtype: row.mtype, num: row.num, details: { undone: row.action, label: row.label, event: row.event_id } });
+    const match = (t) => UNDO_KEYS[t].map((c) => `${c} = ?`).join(" AND ");
+    const keyOf = (t, r) => UNDO_KEYS[t].map((c) => r[c]);
+    const drop = () => q(env, "DELETE FROM undos WHERE chat_id = ? AND user_id = ?", chatId, me.id);
+    const stale = "Тут уже что-то изменилось после тебя — отменить не получится.";
+    const present = !made.length ? [] : await batch(env, ...made.map(([t, r]) => q(env, `SELECT 1 AS ok FROM ${t} WHERE ${match(t)}`, ...keyOf(t, r))));
+    if (present.some((r) => !r.length)) {
+      await drop().run();
+      return stale;
+    }
+    try {
+      await env.DB.batch([
+        ...made.map(([t, r]) => q(env, `DELETE FROM ${t} WHERE ${match(t)}`, ...keyOf(t, r))),
+        ...gone.map(([t, r]) => {
+          const cols = Object.keys(r);
+          return q(env, `INSERT ${t === "machines" ? "" : "OR IGNORE "}INTO ${t} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, ...cols.map((c) => r[c]));
+        }),
+        ...(row.event_id ? [q(env, "UPDATE events SET action = action || '_undone' WHERE id = ?", row.event_id)] : []),
+        drop(),
+      ]);
+    } catch (e) {
+      if (!/UNIQUE|constraint/i.test(String(e))) throw e;
+      await drop().run();
+      return stale;
+    }
+    const who = await label(env, chatId, me);
+    const told = new Set([me.id]);
+    const tell = async (p, text) => {
+      if (!p?.id || told.has(p.id)) return;
+      told.add(p.id);
+      await notice(env, chatId, p, text);
+    };
+    for (const [t, r] of made) {
+      if (t !== "machines" || r.kind !== "hold") continue;
+      const booked = gone.some(([g, x]) => g === "nexts" && x.user_id === r.user_id);
+      await tell(person(r), `отбой: ${mname(r.mtype, r.num)} освободили по ошибке, она снова занята. ${booked ? "Твоя бронь на неё сохранена." : "Твоё место в очереди сохранено."}`);
+    }
+    for (const [t, r] of gone) {
+      if (t !== "machines") continue;
+      const cfg = MACHINES[r.mtype];
+      if (row.action === "claim") await tell(person(r, "reporter"), `в ${cfg.prep} ${r.num} хозяина вещей отметили по ошибке — отметку сняли. Кто: ${who}.`);
+      if (row.action === "free" || row.action === "move") {
+        await tell(person(r), LEFTOVER.has(r.kind)
+          ? `вещи из ${cfg.gen} ${r.num} отметили ${row.action === "move" ? "переложенными" : "забранными"} по ошибке — отметку сняли. Кто: ${who}.`
+          : `${cfg.acc} ${r.num} освободили по ошибке — отметку сняли. Кто: ${who}.`);
+      }
+    }
+    for (const mtype of new Set([...made, ...gone].filter(([t]) => t === "machines").map(([, r]) => r.mtype))) await dispatch(env, chatId, mtype);
+    return null;
+  },
+
   async queue(env, chatId, me, admin, body) {
     const mtype = typeArg(body);
     const cfg = MACHINES[mtype];
@@ -3181,7 +3255,7 @@ const ACTIONS = {
   async admin_reset_laundry(env, chatId, me, admin, body) {
     if (!admin) return "Это могут только админы чата.";
     await env.DB.batch(
-      ["machines", "queue", "nexts", "bookings", "moved"].map((t) =>
+      ["machines", "queue", "nexts", "bookings", "moved", "undos"].map((t) =>
         env.DB.prepare(`DELETE FROM ${t} WHERE chat_id = ?${t === "machines" ? " AND kind != 'broken'" : ""}`).bind(chatId))
     );
     const broken = await first(env, "SELECT 1 AS ok FROM machines WHERE chat_id = ? AND kind = 'broken'", chatId);
@@ -3216,12 +3290,60 @@ async function apiState(request, env) {
   return json(await state(env, chatId, me, admin, section));
 }
 
-async function perform(env, chatId, actor, admin, body) {
+async function snapshot(env, chatId) {
+  const tables = Object.keys(UNDO_KEYS);
+  const out = await batch(env, ...tables.map((t) => q(env, `SELECT * FROM ${t} WHERE chat_id = ?`, chatId)));
+  return Object.fromEntries(tables.map((t, i) => [t, out[i].map((r) => JSON.stringify(r))]));
+}
+
+function diff(before, after) {
+  const made = [];
+  const gone = [];
+  for (const t of Object.keys(UNDO_KEYS)) {
+    const was = new Set(before[t]);
+    const is = new Set(after[t]);
+    for (const r of before[t]) if (!is.has(r)) gone.push([t, JSON.parse(r)]);
+    for (const r of after[t]) if (!was.has(r)) made.push([t, JSON.parse(r)]);
+  }
+  return { made, gone };
+}
+
+function undoFits(row, machineRows) {
+  const pick = (list) => JSON.parse(list).filter(([t]) => t === "machines").map(([, r]) => r);
+  const made = pick(row.made);
+  const slot = (a, b) => a.mtype === b.mtype && a.num === b.num;
+  return made.every((r) => machineRows.some((x) => UNDO_KEYS.machines.every((c) => x[c] === r[c]))) &&
+    pick(row.gone).every((r) => made.some((x) => slot(x, r)) || !machineRows.some((x) => slot(x, r)));
+}
+
+function undoLabel(action, body, trail) {
+  const name = mname(trail.mtype, trail.num);
+  const things = `Вещи из ${MACHINES[trail.mtype].gen.toLowerCase()} ${trail.num}`;
+  if (action === "take") return body.owner === "unknown" ? `${name}: чужая стирка отмечена` : `${name} занята`;
+  if (action === "load") return `${name}: отмечены вещи без программы`;
+  if (action === "claim") return `${name}: вещи отмечены твоими`;
+  if (action === "move") return `${things} отмечены переложенными`;
+  return LEFTOVER.has(trail.details.kind) ? `${things} отмечены забранными` : `${name} освобождена`;
+}
+
+async function keepUndo(env, chatId, actor, body, trail, before, event) {
+  const { made, gone } = diff(before, await snapshot(env, chatId));
+  if (!made.length && !gone.length) return;
+  await env.DB.prepare(
+    "INSERT OR REPLACE INTO undos (chat_id, user_id, action, label, mtype, num, event_id, made, gone, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).bind(
+    chatId, actor.id, body.action, undoLabel(body.action, body, trail), trail.mtype, trail.num, event, JSON.stringify(made), JSON.stringify(gone), now()
+  ).run();
+}
+
+async function perform(env, chatId, actor, admin, body, undoable = false) {
   const trail = {};
+  const before = undoable && UNDOABLE.has(body.action) ? await snapshot(env, chatId) : null;
   const error = await ACTIONS[body.action](env, chatId, actor, admin, body, trail);
   if (error) return error;
   const { action: _, ...fields } = body;
-  await audit(env, chatId, body.action, actor, { ...trail, details: { ...fields, ...trail.details, admin } });
+  const event = await audit(env, chatId, body.action, actor, { ...trail, details: { ...fields, ...trail.details, admin } });
+  if (before) await keepUndo(env, chatId, actor, body, trail, before, event);
   return null;
 }
 
@@ -3243,7 +3365,7 @@ async function apiAction(request, env) {
   }
   await tick(env, chatId);
   const actor = { id: me.id, name: me.name, username: me.username };
-  const error = await perform(env, chatId, actor, admin, body);
+  const error = await perform(env, chatId, actor, admin, body, true);
   if (error) throw new ApiError(error);
   if (announces) spend(env, "room", me.id);
   if (body.action === "privacy") me.hidden = !!body.hidden;
