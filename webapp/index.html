@@ -348,16 +348,16 @@
   .x { border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; padding: 4px; }
   .empty { padding: 40px 16px; text-align: center; color: var(--hint); }
   #undo[hidden] { display: none; }
-  #undo { position: fixed; left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); max-width: 536px; margin: 0 auto; display: flex; align-items: center; gap: 10px; background: var(--text); color: var(--bg); border-radius: 12px; padding: 10px 10px 10px 14px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25); }
+  #undo { position: fixed; left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); max-width: 536px; margin: 0 auto; display: flex; align-items: center; gap: 10px; background: var(--card); color: var(--text); border: 1px solid var(--accent); border-radius: 12px; padding: 10px 10px 10px 14px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3); }
   #undo span { flex: 1; font-size: 14px; }
-  #undo small { display: block; opacity: 0.7; font-size: 12px; }
+  #undo small { display: block; color: var(--hint); font-size: 12px; }
   .undo-box { border: 1px solid var(--accent); border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; }
   .undo-box p { margin: 0; }
   #undo button { border: 0; border-radius: 9px; padding: 8px 12px; font: inherit; font-weight: 600; background: var(--accent); color: var(--accent-text); cursor: pointer; white-space: nowrap; }
   body.undoing #app { padding-bottom: 96px; }
-  .undo-demo { display: flex; align-items: center; gap: 10px; background: var(--text); color: var(--bg); border-radius: 12px; padding: 10px 10px 10px 14px; }
+  .undo-demo { display: flex; align-items: center; gap: 10px; background: var(--card); color: var(--text); border: 1px solid var(--accent); border-radius: 12px; padding: 10px 10px 10px 14px; }
   .undo-demo span { flex: 1; font-size: 14px; }
-  .undo-demo small { display: block; opacity: 0.7; font-size: 12px; }
+  .undo-demo small { display: block; color: var(--hint); font-size: 12px; }
   .undo-demo .btn { margin: 0; white-space: nowrap; }
 </style>
 </head>
