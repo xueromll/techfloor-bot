@@ -45,7 +45,7 @@ The bot reminds you to pick up your clothes, calls you when your turn in the que
 | **Queue and bookings** | A free machine is held for the next person in the queue or for a booking |
 | **Reminders in DMs** | "Finishing soon", "done", then after 1, 3 and 5 h, with buttons "Clothes picked up", "In 15 min", "OK to move" |
 | **Moved clothes** | Into another machine, onto the ironing board or into a bag, and the owner learns where to find them |
-| **Undo a mistake** | Tapped the wrong machine or button? "Undo" at the bottom of the screen puts everything back for 2 minutes |
+| **Undo a mistake** | Tapped the wrong machine or button? "Undo" at the bottom of the screen and in the machine's card puts everything back for 10 minutes |
 | **Time correction** | If the machine recalculates its time, anyone can fix it. Limits stop harmful edits |
 | **`/status` in DMs** | A laundry summary without opening the app |
 | **Evening digest** | Opt-in: what is free and when it is quietest |
@@ -284,7 +284,7 @@ A machine may recalculate its time mid-program, so a running machine has a **«�
 - If the owner's DMs are closed and there was no warning (a short program), the bot posts in the chat when the program ends.
 - The bot **tags an owner with closed DMs and explains why**: «Стиралка 3 закончила. @username, у тебя закрыты личные сообщения — забери, пожалуйста, вещи.» ("Washer 3 is done. @username, your DMs are closed, please pick up your clothes."), and for "finishing soon": «…поэтому напоминаю здесь» ("…so I'm reminding you here"). The bot has no other way to reach them, and the clothes would just sit there. If the DMs open by the time the program ends, the message is edited to a plain "done" without the tag.
 - **"Clothes picked up"** on a machine with leftover clothes ("done", clothes without a program, moved clothes) can be pressed by anyone, and the clothes owner is told who did it.
-- **«Отменить»** ("Undo") shows at the bottom of the app for 2 minutes after taking a machine, marking clothes without a program, "These are my clothes", freeing a machine, "Clothes picked up" and "Clothes moved". Undo puts the machines, queue, bookings and moved clothes back the way they were before the tap (table `undos`, one row per person). If someone else has changed the machine since, it can't be undone. Everyone the bot already messaged about that action (the clothes owner, whoever logged it, the next person in the queue) is told it was a mistake. The undone event in the log gets an `_undone` suffix and doesn't count toward badges.
+- **«Отменить»** ("Undo") shows for 10 minutes at the bottom of the app and in the affected machine's card after taking a machine, marking clothes without a program, "These are my clothes", freeing a machine, "Clothes picked up" and "Clothes moved". Undo puts the machines, queue, bookings and moved clothes back the way they were before the tap (table `undos`, one row per person). If someone else has changed the machine since, it can't be undone. Everyone the bot already messaged about that action (the clothes owner, whoever logged it, the next person in the queue) is told it was a mistake. The undone event in the log gets an `_undone` suffix and doesn't count toward badges.
 
 ### Pick-up reminders
 

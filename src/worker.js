@@ -55,7 +55,7 @@ const LOGIN_MINUTES = 10;
 const SESSION_DAYS = 30;
 const SESSION_COOKIE = "session";
 const HINT_HOURS = 48;
-const UNDO_SECONDS = 120;
+const UNDO_SECONDS = 10 * 60;
 const MOVE_WORDS = /(?<![а-яё])(перелож|перекин|вытащ|вынул)/i;
 const MOVE_HINT = "Переложил чужие вещи? Отметь это в приложении — хозяин узнает, где их искать.";
 const DONE_WORD = /^(все|всё|закончил[а-яё]*|постирал[а-яё]*)$/;
@@ -2337,7 +2337,8 @@ async function state(env, chatId, me, admin, section = "laundry") {
     snooze: SNOOZE_MINUTES,
     digestHour: hourText(digestHour(env)),
     badgeWeek: badgeRows[0]?.week ?? null,
-    undo: undoRows[0] && undoFits(undoRows[0], machineRows) ? { text: undoRows[0].label, until: undoRows[0].at + UNDO_SECONDS } : null,
+    undoMinutes: UNDO_SECONDS / 60,
+    undo: undoRows[0] && undoFits(undoRows[0], machineRows) ? { text: undoRows[0].label, until: undoRows[0].at + UNDO_SECONDS, machines: undoSpots(undoRows[0]) } : null,
     machines,
     queue,
     bookings,
@@ -3314,6 +3315,11 @@ function undoFits(row, machineRows) {
   const slot = (a, b) => a.mtype === b.mtype && a.num === b.num;
   return made.every((r) => machineRows.some((x) => UNDO_KEYS.machines.every((c) => x[c] === r[c]))) &&
     pick(row.gone).every((r) => made.some((x) => slot(x, r)) || !machineRows.some((x) => slot(x, r)));
+}
+
+function undoSpots(row) {
+  const rows = [{ mtype: row.mtype, num: row.num }, ...[...JSON.parse(row.made), ...JSON.parse(row.gone)].filter(([t]) => t === "machines").map(([, r]) => r)];
+  return [...new Map(rows.filter((r) => r.mtype).map((r) => [key(r.mtype, r.num), { t: r.mtype, n: r.num }])).values()];
 }
 
 function undoLabel(action, body, trail) {

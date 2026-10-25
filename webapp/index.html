@@ -350,8 +350,15 @@
   #undo[hidden] { display: none; }
   #undo { position: fixed; left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); max-width: 536px; margin: 0 auto; display: flex; align-items: center; gap: 10px; background: var(--text); color: var(--bg); border-radius: 12px; padding: 10px 10px 10px 14px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25); }
   #undo span { flex: 1; font-size: 14px; }
+  #undo small { display: block; opacity: 0.7; font-size: 12px; }
+  .undo-box { border: 1px solid var(--accent); border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; }
+  .undo-box p { margin: 0; }
   #undo button { border: 0; border-radius: 9px; padding: 8px 12px; font: inherit; font-weight: 600; background: var(--accent); color: var(--accent-text); cursor: pointer; white-space: nowrap; }
-  body.undoing #app { padding-bottom: 88px; }
+  body.undoing #app { padding-bottom: 96px; }
+  .undo-demo { display: flex; align-items: center; gap: 10px; background: var(--text); color: var(--bg); border-radius: 12px; padding: 10px 10px 10px 14px; }
+  .undo-demo span { flex: 1; font-size: 14px; }
+  .undo-demo small { display: block; opacity: 0.7; font-size: 12px; }
+  .undo-demo .btn { margin: 0; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -703,8 +710,23 @@ function undoCard() {
   undoBar.hidden = left <= 0;
   document.body.classList.toggle("undoing", left > 0);
   if (left <= 0) return undoBar.replaceChildren();
-  undoBar.replaceChildren(el("span", {}, `${u.text}.`), el("button", { onclick: () => act({ action: "undo" }) }, "Отменить"));
-  undoTimer = setTimeout(undoCard, left * 1000);
+  undoBar.replaceChildren(el("span", {}, `${u.text}.`, el("small", {}, `Нажал по ошибке? Отменить можно ещё ${undoLeft()}.`)),
+    el("button", { onclick: () => act({ action: "undo" }) }, "Отменить"));
+  undoTimer = setTimeout(undoCard, Math.min(left, 30) * 1000);
+}
+
+function undoLeft() {
+  const m = Math.ceil((S.undo.until - now()) / 60);
+  return m > 1 ? `${m} мин` : "минуту";
+}
+
+function undoBox(m) {
+  const u = S.undo;
+  if (!u || u.until <= now() || !u.machines.some((x) => x.t === m.t && x.n === m.n)) return null;
+  return el("div", { class: "undo-box" },
+    el("p", {}, `Только что: ${u.text}.`),
+    el("p", { class: "hint" }, `Нажал по ошибке? Отменить можно ещё ${undoLeft()} — всё вернётся как было.`),
+    btn("Отменить", () => act({ action: "undo" }), "secondary"));
 }
 
 function warn(text) {
@@ -789,7 +811,7 @@ function openMachine(m) {
     ]);
     return;
   }
-  const body = [el("p", {}, cap(statusText(m)), m.status === "run" ? ` (до ${clock(m.ends)})` : "", ".")];
+  const body = [undoBox(m), el("p", {}, cap(statusText(m)), m.status === "run" ? ` (до ${clock(m.ends)})` : "", ".")];
   for (const x of S.moved.filter((x) => x.bag && x.bag.t === m.t && x.bag.n === m.n)) {
     body.push(el("p", { class: "hint" }, rich`Сверху лежит пакет с вещами ${who(x.owner)} из ${S.types[x.from.t].gen} ${x.from.n}.`));
   }
@@ -1127,12 +1149,15 @@ function openGuide() {
       el("div", { class: "chips two", style: "margin-top:6px" }, el("div", { class: "chip" }, `Через ${S.snooze} мин`), el("div", { class: "chip" }, "Можно переложить"))]),
     guideStep(5, "Забрал вещи — нажми «Вещи забраны»", "Так другие сразу увидят, что машина свободна. Машина «готово», а внутри пусто? Нажать может любой — хозяину придёт уведомление.",
       [el("div", { class: "wall" }, demoTile("done", 3, "готово", true)), el("div", { class: "btn" }, "Вещи забраны")]),
-    guideStep(6, "Видишь занятую машину, которой нет в приложении?", "Нажми на её номер и выбери «Не мои, просто отмечаю» или «Тут чужие вещи, без программы». Это тоже помогает всем.",
+    guideStep(6, "Нажал не туда — нажми «Отменить»",
+      `Занял не ту машину или нажал не ту кнопку? Ещё ${S.undoMinutes} мин внизу экрана видна кнопка «Отменить», и она же есть в карточке этой машины. Всё вернётся как было, а тем, кому бот уже написал, придёт, что это была ошибка.`,
+      el("div", { class: "undo-demo" }, el("span", {}, `${name} 3 занята.`, el("small", {}, `Нажал по ошибке? Отменить можно ещё ${S.undoMinutes} мин.`)), el("div", { class: "btn small" }, "Отменить"))),
+    guideStep(7, "Видишь занятую машину, которой нет в приложении?", "Нажми на её номер и выбери «Не мои, просто отмечаю» или «Тут чужие вещи, без программы». Это тоже помогает всем.",
       el("div", { class: "chips two" }, el("div", { class: "chip" }, "Мои вещи"), el("div", { class: "chip on" }, "Не мои, просто отмечаю"))),
-    guideStep(7, "Лень открывать приложение? Отправь боту /status",
+    guideStep(8, "Лень открывать приложение? Отправь боту /status",
       "Пришлю в личку, какие машины свободны, когда закончат занятые и что с твоими вещами. Нужен свежий статус — отправь /status ещё раз.",
       guideBubble(`${S.types[tab].title} — свободно 3 из ${S.numbers.length}: 2, 5, 9. Работают: 1 до 14:40, 3 до 15:10.`)),
-    guidePrivacy(8, "Когда занимаешь машину,", el("div", { class: "chips two" }, el("div", { class: "chip on" }, "Мои вещи"), el("div", { class: "chip" }, "Не мои, просто отмечаю")), "run", `${name} 3 — Аноним, осталось ~40 мин`),
+    guidePrivacy(9, "Когда занимаешь машину,", el("div", { class: "chips two" }, el("div", { class: "chip on" }, "Мои вещи"), el("div", { class: "chip" }, "Не мои, просто отмечаю")), "run", `${name} 3 — Аноним, осталось ~40 мин`),
     el("h2", { style: "margin:20px 0 4px" }, "Что значат цвета"),
     el("div", { class: "demo legend-rows" }, [
       ["free", "свободна", "Свободна — можно занимать."],

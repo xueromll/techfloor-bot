@@ -13,7 +13,8 @@ def busy(t, keep):
 
 print("--- заняла не ту стиралку: «Отменить» возвращает как было, событие помечено отменённым")
 st, d = api(ANYA, {"action": "take", "t": "w", "n": 3, "time": "40"}); assert st == 200, d
-assert d["undo"]["text"] == "Стиралка 3 занята" and d["undo"]["until"] > d["now"], d["undo"]
+assert d["undo"]["text"] == "Стиралка 3 занята" and d["undo"]["machines"] == [{"t": "w", "n": 3}] and d["undoMinutes"] == 10, d["undo"]
+assert 599 < d["undo"]["until"] - d["now"] <= 600, d["undo"]
 st, d = api(BORYA); assert d["undo"] is None, d["undo"]
 st, d = api(ANYA, {"action": "undo"}); assert st == 200, d
 assert m(d, "w", 3)["status"] == "free" and d["undo"] is None, m(d, "w", 3)
@@ -50,6 +51,7 @@ wipe("machines", "queue")
 api(GALYA, {"action": "take", "t": "w", "n": 6, "time": "40"}); finish("w", 6)
 st, d = api(BORYA, {"action": "move", "ft": "w", "fn": 6, "to": "machine", "tt": "w", "tn": 7}); assert st == 200, d
 assert m(d, "w", 7)["status"] == "parked" and d["moved"], d["moved"]
+assert sorted((x["t"], x["n"]) for x in d["undo"]["machines"]) == [("w", 6), ("w", 7)], d["undo"]
 st, d = api(BORYA, {"action": "undo"}); assert st == 200, d
 assert m(d, "w", 6)["status"] == "done" and m(d, "w", 7)["status"] == "free" and not d["moved"], (m(d, "w", 6), m(d, "w", 7), d["moved"])
 
@@ -72,9 +74,11 @@ api(GALYA, {"action": "take", "t": "w", "n": 9, "time": "30"})
 st, d = api(VOVA, {"action": "undo"}); assert st == 400 and "уже что-то изменилось" in err(d), d
 st, d = api(VOVA); assert m(d, "w", 9)["owner"]["id"] == 4, m(d, "w", 9)
 
-print("--- через две минуты отменять уже поздно")
+print("--- через 9 минут ещё можно отменить, через 10 уже поздно")
 api(BORYA, {"action": "take", "t": "w", "n": 10, "time": "40"})
-sql("UPDATE undos SET at = at - 121 WHERE user_id = 2")
+sql("UPDATE undos SET at = at - 540 WHERE user_id = 2")
+st, d = api(BORYA); assert d["undo"]["text"] == "Стиралка 10 занята", d["undo"]
+sql("UPDATE undos SET at = at - 61 WHERE user_id = 2")
 st, d = api(BORYA); assert d["undo"] is None, d["undo"]
 st, d = api(BORYA, {"action": "undo"}); assert st == 400, d
 st, d = api(BORYA); assert m(d, "w", 10)["status"] == "run", m(d, "w", 10)
