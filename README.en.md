@@ -50,7 +50,6 @@ The bot reminds you to pick up your clothes, calls you when your turn in the que
 | **`/status` in DMs** | A laundry summary without opening the app |
 | **Evening digest** | Opt-in: what is free and when it is quietest |
 | **Hall of fame** | "Lightning", "Laundry Hero", "Night Owl", "Clean Week". No rankings in the chat and no perks |
-| **Chat hints** | When someone writes "moved it" or "washer 3 done", the bot suggests marking it in the app |
 | **Website** | The same app in a regular browser, signed in through the bot |
 | **Protection** | Telegram signature checks, rate limits, automatic flood blocking, `/block` moderation, works only in its own chat |
 | **Works without a VPN** | A loader and a Yandex Cloud gateway get around Cloudflare connections being cut |
@@ -203,7 +202,7 @@ Then:
 | `PLAYROOM` | `on` / `off`, the playroom |
 | `ROOM_REMIND_HOUR` | Hour of the evening question about playroom bookings |
 
-Everything else (limits, timings, texts) is **constants at the top of [`src/worker.js`](src/worker.js)**: `WARN_MINUTES`, `MAX_MINUTES`, `NAG_HOURS`, `DIGEST_HOUR`, `LIMITS`, `HINTS` and others.
+Everything else (limits, timings, texts) is **constants at the top of [`src/worker.js`](src/worker.js)**: `WARN_MINUTES`, `MAX_MINUTES`, `NAG_HOURS`, `DIGEST_HOUR`, `LIMITS` and others.
 
 ---
 
@@ -245,7 +244,7 @@ To run a single suite, start `python tests/faketg.py` and `npm run test:server` 
 | `race.py` | concurrent requests and moving clothes into a chosen machine |
 | `abuse.py` | limits, flood, request size, `/block` |
 | `web.py` | website sign-in |
-| `habits.py` | reminders with buttons, evening digest, badges, chat hints |
+| `habits.py` | reminders with buttons, evening digest, badges, bot stays quiet in chat |
 | `common.py` | shared harness: signed initData, webhook calls, running cron, database access |
 
 <details>
@@ -357,27 +356,6 @@ The chat is chosen the same way as for `/status`. The link is built from the add
 - The owner has to press "Start" with the bot first, otherwise Telegram won't let the bot message them. Without `OWNER_ID` the bot replies that there is no one to forward to.
 - Accepted: text, photos, JPG, PNG and WebP images, PDF and MP4 video up to 20 MB (`PROBLEM_FILES`, `PROBLEM_FILE_MB`). For any other format or a file that is too large, the bot explains what's wrong and asks again. These attempts do not use up the problem-report limit.
 - **Owner replies:** reply to the «Проблема от …» ("Problem from …") message. The bot forwards the reply (a screenshot is fine) and answers «Отправлено.» ("Sent.") or «Не доставлено» ("Not delivered"). The person can reply to the reply, and it reaches the owner again as «Проблема от …». Only the `OWNER_ID` user can reply this way.
-
-### Chat hints
-
-When someone writes in the group chat instead of using the app, the bot replies with a hint and an **«Отметить в приложении»** ("Mark it in the app") button. The rules are in `HINTS` in `src/worker.js`.
-
-| Hint | Triggers on | Examples |
-|---|---|---|
-| **«Переложил чужие вещи?»** ("Moved someone's clothes?") | Text or a photo caption with a word starting with «перелож», «перекин», «вытащ», «вынул» ("moved", "took out"; `MOVE_WORDS`), in any gender or number | Yes: «переложила», «перекинули», «вещи переложены» |
-| **«Стирка закончилась?»** ("Load done?") | A short message (up to 6 words, no "?") with «все»/«всё» ("done") or «закончил…»/«постирал…» ("finished…"; `DONE_WORD`), where all other words are machine numbers, "washer", "dryer", "machine", "wash", "dry" in any form, or fillers from `DONE_FILLER` («уже», «тоже», «у меня», «моя»…) | Yes: «5 всё», «стиралка 3 закончила», «у меня постиралось»<br/>No: «все заняты» ("all busy"), «всё?», «порошок закончился» ("out of detergent") |
-
-- At most one hint of each kind per chat every 10 minutes (the `hint` limit in `LIMITS`).
-- The button opens the app with a `startapp=<chat>_<kind><message id>` link (`m` means "moved", `f` means "finished"). With such a link the app shows a card on top explaining what to press. The card disappears after the right action or on "Hide".
-- **The hint is deleted** when any chat member opens the app through its button. Telegram does not tell the bot about link-button presses, so the first app request with that link serves as the signal.
-- Hint ids are stored in the `hints` table and dropped after `HINT_HOURS` (48 h). After that Telegram no longer lets the bot delete its own messages, so a hint nobody opened stays in the chat.
-- The bot reacts only to new messages: old and edited ones are not checked.
-- Only messages in the topic where the laundry board sits are checked. In a forum chat, messages in other topics are ignored.
-
-> [!NOTE]
-> To see regular group messages, the bot must be a chat admin (it already is, for pinning) or have privacy mode turned off in @BotFather.
-
----
 
 ## Flood and abuse protection
 

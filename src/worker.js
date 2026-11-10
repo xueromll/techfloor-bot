@@ -26,8 +26,9 @@ const MEMBER_CACHE_MAX = 500;
 const AUTH_CACHE_SECONDS = 300;
 const AUTH_CACHE_MAX = 200;
 const SWEEP_SECONDS = 600;
+const CLEANUP_SECONDS = 3600;
 const RECENT_SECONDS = 120;
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 const ROOM_USER_BOOKINGS = 3;
 const INIT_DATA_MAX = 4096;
 const API_BODY_MAX = 8 * 1024;
@@ -54,18 +55,7 @@ const NEVER = 1e12;
 const LOGIN_MINUTES = 10;
 const SESSION_DAYS = 30;
 const SESSION_COOKIE = "session";
-const HINT_HOURS = 48;
 const UNDO_SECONDS = 10 * 60;
-const MOVE_WORDS = /(?<![а-яё])(перелож|перекин|вытащ|вынул)/i;
-const MOVE_HINT = "Переложил чужие вещи? Отметь это в приложении — хозяин узнает, где их искать.";
-const DONE_WORD = /^(все|всё|закончил[а-яё]*|постирал[а-яё]*)$/;
-const DONE_FILLER = new Set(["и", "у", "меня", "моя", "мой", "моё", "мое", "уже", "тоже", "вроде", "наконец"]);
-const MACHINE_WORD = /^(стирал|сушил|машин|стирк|сушк)/;
-const DONE_HINT = "Стирка закончилась? Отметь это в приложении — все увидят, что машина свободна.";
-const HINTS = {
-  m: { text: MOVE_HINT, match: (text) => MOVE_WORDS.test(text) },
-  f: { text: DONE_HINT, match: saysDone },
-};
 
 const LIMITS = {
   state: { limit: 60, seconds: 60, scaled: true },
@@ -78,7 +68,6 @@ const LIMITS = {
   tap: { limit: 20, seconds: 60 },
   problem: { limit: 5, seconds: 3600 },
   ask: { limit: 10, seconds: 3600, scaled: true },
-  hint: { limit: 1, seconds: 600 },
 };
 
 const WALLS = [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11]];
@@ -199,6 +188,7 @@ const SCHEMA = [
     hidden INTEGER NOT NULL DEFAULT 0, seen_at REAL NOT NULL,
     digest INTEGER NOT NULL DEFAULT 0, digest_asked INTEGER NOT NULL DEFAULT 0, digest_day TEXT,
     PRIMARY KEY (chat_id, user_id))`,
+  `CREATE INDEX IF NOT EXISTS people_hidden ON people (chat_id) WHERE hidden = 1`,
   `CREATE TABLE IF NOT EXISTS pboards (chat_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL, text TEXT, thread_id INTEGER)`,
   `CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value)`,
   `CREATE TABLE IF NOT EXISTS cron_log (at REAL NOT NULL)`,
@@ -227,15 +217,13 @@ const SCHEMA = [
     actor_id INTEGER, actor_name TEXT, actor_username TEXT, mtype TEXT, num INTEGER,
     owner_id INTEGER, owner_name TEXT, owner_username TEXT, details TEXT)`,
   `CREATE INDEX IF NOT EXISTS events_chat_at ON events (chat_id, at)`,
+  `CREATE INDEX IF NOT EXISTS events_at ON events (at)`,
   `CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY, kind TEXT NOT NULL, user_id INTEGER NOT NULL, name TEXT NOT NULL, username TEXT,
     chat_id INTEGER NOT NULL, expires_at REAL NOT NULL, created_at REAL NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS badges (
     chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, badge TEXT NOT NULL, week REAL NOT NULL, value INTEGER NOT NULL,
     PRIMARY KEY (chat_id, user_id, badge, week))`,
-  `CREATE TABLE IF NOT EXISTS hints (
-    chat_id INTEGER NOT NULL, source_id INTEGER NOT NULL, message_id INTEGER NOT NULL, at REAL NOT NULL,
-    PRIMARY KEY (chat_id, source_id))`,
   `CREATE TABLE IF NOT EXISTS undos (
     chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, action TEXT NOT NULL, label TEXT NOT NULL,
     mtype TEXT, num INTEGER, event_id INTEGER, made TEXT NOT NULL, gone TEXT NOT NULL, at REAL NOT NULL,
@@ -243,6 +231,7 @@ const SCHEMA = [
 ];
 
 const MIGRATIONS = [
+  "DROP TABLE IF EXISTS hints",
   "ALTER TABLE machines ADD COLUMN warned INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE machines ADD COLUMN reporter_id INTEGER",
   "ALTER TABLE machines ADD COLUMN reporter_name TEXT",
@@ -276,7 +265,7 @@ const MIGRATIONS = [
 ];
 
 const NUMBERS = WALLS.flat();
-const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings", "room_joins", "room_requests", "blocks", "events", "sessions", "badges", "hints", "undos"];
+const TABLES = ["machines", "boards", "queue", "nexts", "bookings", "moved", "people", "pboards", "room_bookings", "room_joins", "room_requests", "blocks", "events", "sessions", "badges", "undos"];
 const UNKNOWN = { id: 0, name: "неизвестно", username: null };
 
 const LEFTOVER = new Set(["done", "parked", "loaded"]);
@@ -1090,8 +1079,7 @@ async function tick(env, chatId = null) {
     await sendDigests(env, t);
     await settleBadges(env, t);
   }
-  if (t - cleanupAt > SWEEP_SECONDS) {
-    cleanupAt = t;
+  if (t - cleanupAt > SWEEP_SECONDS && (await cleanupDue(env, t))) {
     await env.DB.batch([
       env.DB.prepare("DELETE FROM moved WHERE at < ?").bind(t - CLOTHES_HOURS * 3600),
       env.DB.prepare("DELETE FROM room_bookings WHERE ends < ?").bind(t - 86400),
@@ -1100,13 +1088,21 @@ async function tick(env, chatId = null) {
       env.DB.prepare("DELETE FROM blocks WHERE until IS NOT NULL AND until < ?").bind(t),
       env.DB.prepare("DELETE FROM events WHERE at < ?").bind(t - LOG_DAYS * 86400),
       env.DB.prepare("DELETE FROM sessions WHERE expires_at < ?").bind(t),
-      env.DB.prepare("DELETE FROM hints WHERE at < ?").bind(t - HINT_HOURS * 3600),
       env.DB.prepare("DELETE FROM undos WHERE at < ?").bind(t - UNDO_SECONDS),
     ]);
   }
   if (!playroom(env)) return;
   await remindRoomBookings(env, t);
   await sweepRoomBoards(env, t);
+}
+
+// The cron often lands on a fresh isolate, so the in-memory cleanupAt alone would let the sweep run every minute.
+async function cleanupDue(env, t) {
+  cleanupAt = t;
+  const last = await first(env, "SELECT value FROM meta WHERE key = 'cleanup_at'");
+  if (last && t - Number(last.value) < CLEANUP_SECONDS) return false;
+  await env.DB.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('cleanup_at', ?)").bind(t).run();
+  return true;
 }
 
 async function sweepRoomBoards(env, t) {
@@ -1466,7 +1462,6 @@ async function onUpdate(update, env, origin) {
     if (answered.text?.includes(PROBLEM_ASK) || answered.text?.startsWith(ANSWER_HEAD)) return problem(env, msg, text);
   }
   if (msg.chat?.type === "private" && msg.from && !msg.text?.startsWith("/") && DM_CONTENT.some((k) => msg[k])) return stray(env, msg);
-  if ((msg.chat?.type === "group" || msg.chat?.type === "supergroup") && !msg.text?.startsWith("/")) return chatHint(env, msg);
   if (typeof msg.text !== "string" || !msg.text.startsWith("/")) return;
   const [command, target] = msg.text.trim().split(/\s+/)[0].split("@");
   if (target && target.toLowerCase() !== (await username(env)).toLowerCase()) return;
@@ -1505,45 +1500,6 @@ async function onUpdate(update, env, origin) {
   else if (command === "/board" || command === "/start") await updatePinned(env, chat.id, command === "/board", thread);
   else if (command === "/unpin") await unpin(env, msg, thread);
   else if (command !== "/problem" && command !== "/status" && command !== "/login") await moderate(env, msg, command, thread, anonymousAdmin ? null : msg.from);
-}
-
-function saysDone(text) {
-  if (text.includes("?")) return false;
-  const words = text.toLowerCase().match(/[а-яё]+|\d+/g) || [];
-  return words.length <= 6 && words.some((w) => DONE_WORD.test(w)) &&
-    words.every((w) => DONE_WORD.test(w) || DONE_FILLER.has(w) || /^\d+$/.test(w) || MACHINE_WORD.test(w));
-}
-
-async function chatHint(env, msg) {
-  const text = msg.text ?? msg.caption;
-  if (!laundry(env) || !msg.from || msg.from.is_bot || typeof text !== "string") return;
-  const kind = Object.keys(HINTS).find((k) => HINTS[k].match(text));
-  if (!kind) return;
-  const chatId = msg.chat.id;
-  const thread = msg.is_topic_message && msg.message_thread_id ? msg.message_thread_id : null;
-  const board = await first(env, "SELECT thread_id FROM boards WHERE chat_id = ?", chatId);
-  if (!board || (board.thread_id ?? null) !== thread || spend(env, "hint", `${chatId}:${kind}`)) return;
-  const res = await say(env, chatId, HINTS[kind].text, {
-    message_thread_id: thread,
-    reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
-    reply_markup: { inline_keyboard: [[{ text: "Отметить в приложении", url: await appLink(env, chatId, `${kind}${msg.message_id}`) }]] },
-  });
-  if (!res.ok) return;
-  await env.DB.prepare("INSERT OR REPLACE INTO hints (chat_id, source_id, message_id, at) VALUES (?, ?, ?, ?)")
-    .bind(chatId, msg.message_id, res.result.message_id, now()).run();
-  const from = msg.from;
-  const actor = { id: from.id, name: [from.first_name, from.last_name].filter(Boolean).join(" "), username: from.username };
-  await audit(env, chatId, "hint", actor, { details: { kind: hintKind(kind), source_id: msg.message_id } });
-}
-
-function hintKind(kind) {
-  return kind === "m" ? "move" : kind === "f" ? "done" : kind ?? null;
-}
-
-async function dropHint(env, chatId, sourceId) {
-  const row = await first(env, "DELETE FROM hints WHERE chat_id = ? AND source_id = ? RETURNING message_id", chatId, sourceId);
-  if (row) await tg(env, "deleteMessage", { chat_id: chatId, message_id: row.message_id });
-  return !!row;
 }
 
 async function problem(env, msg, text) {
@@ -2123,7 +2079,7 @@ async function identify(request, env) {
     if (!(now() - authDate <= INIT_DATA_TTL)) throw new ApiError("Сессия устарела — закрой и открой приложение заново.", 401);
     const start = startParam.match(/^(-?\d{1,15})(?:_([a-z])(\d{1,12})?)?$/);
     if (!start) throw new ApiError("Открой приложение кнопкой из закреплённого сообщения в чате.", 400);
-    return { me: { id: user.id, name: user.first_name, username: user.username ?? null }, chatId: Number(start[1]), tab: start[2], hint: Number(start[3] || 0) };
+    return { me: { id: user.id, name: user.first_name, username: user.username ?? null }, chatId: Number(start[1]), tab: start[2] };
   }
   const ip = clientIp(request, env);
   const retry = full(env, "fail", ip);
@@ -2166,7 +2122,7 @@ async function apiLogout(request, env, url) {
 }
 
 async function authorize(request, env, bucket) {
-  const { me: user, chatId, tab, hint } = await identify(request, env);
+  const { me: user, chatId, tab } = await identify(request, env);
   if (!allowed(env, chatId)) throw new ApiError(FOREIGN_CHAT, 403);
   const rooms = playroom(env);
   const washing = laundry(env);
@@ -2195,9 +2151,6 @@ async function authorize(request, env, bucket) {
   }
   const { inside, admin } = await membership(env, chatId, user.id);
   if (!inside) throw new ApiError("Приложение доступно только участникам чата.", 403);
-  if (hint && await dropHint(env, chatId, hint)) {
-    await audit(env, chatId, "hint_open", user, { details: { kind: hintKind(tab), source_id: hint } });
-  }
   const me = { ...user };
   me.hidden = await remember(env, chatId, me, mine[0]);
   me.digest = !!mine[0]?.digest;
@@ -2249,7 +2202,7 @@ async function state(env, chatId, me, admin, section = "laundry") {
   const days = rooms ? roomDays(env) : [];
   const [peopleRows, machineRows, nextRows, bookingRows, queueRows, movedRows, dmRows, boardRows, badgeRows, undoRows, roomRows = [], joinRows = [], requestRows = []] = await batch(
     env,
-    q(env, "SELECT * FROM people WHERE chat_id = ?", chatId),
+    q(env, "SELECT user_id, hidden FROM people WHERE chat_id = ? AND hidden = 1", chatId),
     q(env, "SELECT * FROM machines WHERE chat_id = ?", chatId),
     q(env, "SELECT * FROM nexts WHERE chat_id = ?", chatId),
     q(env, "SELECT * FROM bookings WHERE chat_id = ? ORDER BY at", chatId),
@@ -2382,7 +2335,7 @@ async function badgeCounts(env, chatId, from, to, t) {
     q(env,
       "SELECT owner_id AS user_id, COUNT(*) AS runs, SUM(ok) AS ok FROM (SELECT f.owner_id, (? - json_extract(f.details, '$.ends_at') <= ? OR EXISTS (" +
         "SELECT 1 FROM events p WHERE p.chat_id = f.chat_id AND p.at >= f.at AND p.mtype = f.mtype AND p.num = f.num AND p.actor_id = f.owner_id " +
-        "AND p.at - json_extract(f.details, '$.ends_at') <= ? AND (" +
+        "AND p.at <= json_extract(f.details, '$.ends_at') + ? AND (" +
         "(p.action = 'free' AND json_extract(p.details, '$.started_at') = json_extract(f.details, '$.started_at')) OR " +
         "(p.action = 'take' AND json_extract(p.details, '$.replaced.started_at') = json_extract(f.details, '$.started_at'))))) AS ok " +
         "FROM events f WHERE f.chat_id = ? AND f.at >= ? AND f.at < ? AND f.action = 'finished' AND f.owner_id IS NOT NULL) GROUP BY owner_id",
